@@ -535,10 +535,23 @@ async function uploadEntries(
 
     try {
       const result = await uploadRecording(formData);
+      if (!result.ok) {
+        patchJobs({ [entry.fingerprint]: makeJob(entry, "failed", result.error) });
+        return;
+      }
+      if (result.mock) {
+        patchJobs({ [entry.fingerprint]: makeJob(entry, "uploaded", "백업 완료 · 테스트 모드") });
+        return;
+      }
+
+      patchJobs({ [entry.fingerprint]: makeJob(entry, "uploading", "백업 완료 · 네이버 클로바 텍스트 추출 중") });
+      const stt = await processRecordingImmediately(result.id);
       patchJobs({
-        [entry.fingerprint]: result.ok
-          ? makeJob(entry, "uploaded", "백업 완료 · STT 대기열 등록")
-          : makeJob(entry, "failed", result.error),
+        [entry.fingerprint]: makeJob(
+          entry,
+          stt.ok ? "uploaded" : "failed",
+          stt.ok ? "백업 완료 · 네이버 클로바 텍스트 추출 완료" : stt.error
+        ),
       });
     } catch (error) {
       patchJobs({
@@ -546,6 +559,23 @@ async function uploadEntries(
       });
     }
   });
+}
+
+async function processRecordingImmediately(recordingId: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    const res = await fetch("/api/jobs/process-recording", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ recordingId }),
+    });
+    const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+    if (!res.ok || data.ok === false) {
+      return { ok: false, error: data.error ?? "네이버 클로바 텍스트 추출 실패" };
+    }
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : "네이버 클로바 텍스트 추출 실패" };
+  }
 }
 
 function makeJob(entry: AudioEntry, status: JobStatus, message: string): PersistedJob {

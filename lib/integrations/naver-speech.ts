@@ -19,6 +19,19 @@ export async function transcribeSignedUrlWithNaver(
   const invokeUrl = process.env.NAVER_CLOVA_SPEECH_INVOKE_URL;
   const secret = process.env.NAVER_CLOVA_SPEECH_SECRET;
   if (!invokeUrl || !secret) {
+    return transcribeSignedUrlWithNaverCsr(signedUrl, options);
+  }
+
+  return transcribeSignedUrlWithNaverLongForm(signedUrl, options, invokeUrl, secret);
+}
+
+async function transcribeSignedUrlWithNaverLongForm(
+  signedUrl: string,
+  options: { language?: "ko-KR" | "en-US" | "ja" | "zh-cn"; completion?: "sync" | "async" },
+  invokeUrl: string,
+  secret: string
+): Promise<NaverSpeechResult> {
+  if (!invokeUrl || !secret) {
     throw new Error("NAVER_CLOVA_SPEECH_INVOKE_URL and NAVER_CLOVA_SPEECH_SECRET are required.");
   }
 
@@ -71,3 +84,55 @@ export async function transcribeSignedUrlWithNaver(
   };
 }
 
+async function transcribeSignedUrlWithNaverCsr(
+  signedUrl: string,
+  options: { language?: "ko-KR" | "en-US" | "ja" | "zh-cn" }
+): Promise<NaverSpeechResult> {
+  const clientId = process.env.NAVER_CLOUD_CLIENT_ID ?? process.env.NAVER_CLIENT_ID;
+  const clientSecret = process.env.NAVER_CLOUD_CLIENT_SECRET ?? process.env.NAVER_CLIENT_SECRET;
+  if (!clientId || !clientSecret) {
+    throw new Error(
+      "NAVER_CLOVA_SPEECH_INVOKE_URL/NAVER_CLOVA_SPEECH_SECRET or NAVER_CLOUD_CLIENT_ID/NAVER_CLOUD_CLIENT_SECRET are required."
+    );
+  }
+
+  const audio = await fetch(signedUrl);
+  if (!audio.ok) {
+    throw new Error(`Audio download for NAVER CSR failed: ${audio.status} ${await audio.text()}`);
+  }
+
+  const endpoint =
+    process.env.NAVER_CSR_STT_ENDPOINT ??
+    `https://naveropenapi.apigw.ntruss.com/recog/v1/stt?lang=${toCsrLanguage(options.language ?? "ko-KR")}`;
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/octet-stream",
+      "X-NCP-APIGW-API-KEY-ID": clientId,
+      "X-NCP-APIGW-API-KEY": clientSecret,
+    },
+    body: await audio.arrayBuffer(),
+  });
+
+  if (!res.ok) {
+    throw new Error(`Naver CLOVA CSR failed: ${res.status} ${await res.text()}`);
+  }
+
+  const raw = (await res.json()) as { text?: string };
+  const text = raw.text ?? "";
+  return {
+    text,
+    segments: text ? [{ text, startSec: 0, endSec: 0, speaker: "0", confidence: null }] : [],
+    raw,
+  };
+}
+
+function toCsrLanguage(language: "ko-KR" | "en-US" | "ja" | "zh-cn") {
+  const map = {
+    "ko-KR": "Kor",
+    "en-US": "Eng",
+    ja: "Jpn",
+    "zh-cn": "Chn",
+  };
+  return map[language];
+}

@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server";
-import { createSupabaseAdminClient, isUsingSupabaseServer } from "@/lib/supabase/server";
+import {
+  createSupabaseAdminClient,
+  createSupabaseServerClient,
+  isUsingSupabaseServer,
+} from "@/lib/supabase/server";
 import { processRecordingNow } from "@/lib/recording-processor";
 
 export const runtime = "nodejs";
@@ -54,3 +58,50 @@ export async function GET(req: Request) {
   }
 }
 
+export async function POST(req: Request) {
+  if (!isUsingSupabaseServer()) {
+    return NextResponse.json({ error: "Supabase environment is required." }, { status: 500 });
+  }
+
+  const { recordingId } = (await req.json().catch(() => ({}))) as { recordingId?: string };
+  if (!recordingId) {
+    return NextResponse.json({ error: "recordingId is required." }, { status: 400 });
+  }
+
+  const supabase = await createSupabaseServerClient();
+  const {
+    data: { user },
+    error: authError,
+  } = await supabase.auth.getUser();
+  if (authError || !user) {
+    return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
+  }
+
+  const { data: recording, error } = await supabase
+    .from("recordings")
+    .select("id")
+    .eq("id", recordingId)
+    .eq("owner_id", user.id)
+    .single();
+  if (error || !recording) {
+    return NextResponse.json({ error: "recording not found" }, { status: 404 });
+  }
+
+  try {
+    const result = await processRecordingNow(recordingId);
+    return NextResponse.json({ ok: true, processed: true, result });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "processing failed";
+    const admin = createSupabaseAdminClient();
+    await admin
+      .from("stt_jobs")
+      .update({
+        status: "failed",
+        error_code: "processing_failed",
+        error_message: message,
+        completed_at: new Date().toISOString(),
+      })
+      .eq("recording_id", recordingId);
+    return NextResponse.json({ ok: false, error: message }, { status: 500 });
+  }
+}
