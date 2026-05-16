@@ -24,9 +24,10 @@ const HANDLE_KEY = "recordings-directory";
 const STATE_KEY = "jamsa-auto-backup-state-v4";
 const MAX_PARALLEL_UPLOADS = 3;
 const MAX_SCAN_FILES = 100_000;
-const MAX_SCAN_DIRS = 80;
+const MAX_SCAN_DIRS = 1_000;
 const SCAN_TIMEOUT_MS = 300_000;
 const UPLOAD_TIMEOUT_MS = 10 * 60_000;
+const SCAN_UPLOAD_BATCH_SIZE = 200;
 const ACCEPT = "audio/*,.mp3,.m4a,.wav,.webm,.aac,.ogg,.oga,.3gp,.amr";
 
 type BackupStatus = "unsupported" | "idle" | "ready" | "scanning" | "uploading" | "done" | "error";
@@ -118,7 +119,7 @@ export default function AutoBackupManager() {
   }, []);
 
   const processEntries = useCallback(
-    async (entries: AudioEntry[], sourceLabel: string) => {
+    async (entries: AudioEntry[], sourceLabel: string, completeWhenDone = true) => {
       const latestState = loadState();
       const discovered: Record<string, PersistedJob> = {};
 
@@ -147,12 +148,14 @@ export default function AutoBackupManager() {
         });
 
       if (entries.length === 0) {
+        if (!completeWhenDone) return;
         setStatus("done");
         setMessage(`${sourceLabel}에서 지원되는 오디오 파일을 찾지 못했습니다. 실제 녹음 파일이 있는 폴더나 파일을 다시 선택해 주세요.`);
         return;
       }
 
       if (runnable.length === 0) {
+        if (!completeWhenDone) return;
         setStatus("done");
         setMessage(`${sourceLabel} 확인 완료: 새로 백업할 파일이 없습니다. 이미 완료된 파일은 다시 올리지 않습니다.`);
         return;
@@ -161,6 +164,7 @@ export default function AutoBackupManager() {
       setStatus("uploading");
       setMessage(`${runnable.length}개 파일을 중단 없이 끝까지 백업합니다. 각 파일은 백업 완료 즉시 통화변환을 시작하고, 백업 큐는 다음 파일을 계속 처리합니다.`);
       await uploadEntries(runnable, patchJobs, setCurrentFile, MAX_PARALLEL_UPLOADS);
+      if (!completeWhenDone) return;
 
       const remaining = countRemaining();
       setStatus("done");
@@ -214,15 +218,32 @@ export default function AutoBackupManager() {
         }
 
         setStatus("scanning");
-        setMessage("녹음 폴더를 스캔하고 있습니다. 너무 큰 상위 폴더를 선택했다면 실제 녹음 폴더만 다시 지정해 주세요.");
+        setMessage("녹음 폴더를 스캔하고 있습니다. 발견한 파일은 200개 단위로 바로 백업을 시작합니다.");
 
-        const entries = await withTimeout(
-          collectAudioFiles(handle, "", { startedAt: Date.now(), dirs: 0, files: 0 }),
+        let streamedCount = 0;
+        const uploadBatch = async (batch: AudioEntry[], ctx: ScanContext) => {
+          if (batch.length === 0) return;
+          streamedCount += batch.length;
+          setStatus("uploading");
+          setMessage(`스캔 ${ctx.files}개 발견 · ${streamedCount}개를 백업 큐에 올리는 중입니다.`);
+          await processEntries(batch, "녹음 폴더", false);
+        };
+
+        const remainingEntries = await withTimeout(
+          collectAudioFiles(handle, "", { startedAt: Date.now(), dirs: 0, files: 0 }, uploadBatch),
           SCAN_TIMEOUT_MS,
           "폴더 스캔이 5분을 넘었습니다. 실제 녹음 파일이 들어있는 하위 폴더만 선택해 주세요."
         );
 
-        await processEntries(entries, "녹음 폴더");
+        await processEntries(remainingEntries, "녹음 폴더", false);
+        const remaining = countRemaining();
+        setStatus("done");
+        setCurrentFile(null);
+        setMessage(
+          remaining > 0
+            ? `스캔과 재시작 처리를 마쳤습니다. 남은 파일 ${remaining}개는 같은 폴더 파일로 업로드를 다시 누르면 완료 파일을 건너뛰고 이어집니다.`
+            : `녹음 폴더 스캔과 백업을 완료했습니다. 확인한 파일 ${streamedCount + remainingEntries.length}개 중 완료 파일은 다시 올리지 않았습니다.`
+        );
       } catch (error) {
         setStatus("error");
         setCurrentFile(null);
@@ -677,7 +698,12 @@ function countRemaining() {
   ).length;
 }
 
-async function collectAudioFiles(handle: any, prefix: string, ctx: ScanContext): Promise<AudioEntry[]> {
+async function collectAudioFiles(
+  handle: any,
+  prefix: string,
+  ctx: ScanContext,
+  onBatch?: (entries: AudioEntry[], ctx: ScanContext) => Promise<void>
+): Promise<AudioEntry[]> {
   if (Date.now() - ctx.startedAt > SCAN_TIMEOUT_MS) {
     throw new Error("폴더 스캔 시간이 초과되었습니다. 녹음 파일이 들어있는 하위 폴더만 선택해 주세요.");
   }
@@ -692,7 +718,7 @@ async function collectAudioFiles(handle: any, prefix: string, ctx: ScanContext):
     const path = prefix ? `${prefix}/${name}` : name;
     if (child.kind === "directory") {
       if (prefix && !shouldScanDirectory(name)) continue;
-      files.push(...(await collectAudioFiles(child, path, ctx)));
+      files.push(...(await collectAudioFiles(child, path, ctx, onBatch)));
       continue;
     }
 
@@ -705,6 +731,10 @@ async function collectAudioFiles(handle: any, prefix: string, ctx: ScanContext):
       relativePath: path,
       fingerprint: makeFingerprint(file, path),
     });
+    if (onBatch && files.length >= SCAN_UPLOAD_BATCH_SIZE) {
+      const batch = files.splice(0, files.length).sort((a, b) => b.file.lastModified - a.file.lastModified);
+      await onBatch(batch, ctx);
+    }
     if (ctx.files >= MAX_SCAN_FILES) break;
   }
 
