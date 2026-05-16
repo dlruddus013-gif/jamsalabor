@@ -22,7 +22,6 @@ const DB_NAME = "jamsa-auto-backup";
 const STORE_NAME = "handles";
 const HANDLE_KEY = "recordings-directory";
 const STATE_KEY = "jamsa-auto-backup-state-v4";
-const MAX_AUTO_UPLOAD_PER_RUN = 12;
 const MAX_PARALLEL_UPLOADS = 1;
 const MAX_SCAN_FILES = 400;
 const MAX_SCAN_DIRS = 80;
@@ -136,8 +135,7 @@ export default function AutoBackupManager() {
         .filter((entry) => {
           const job = allJobs[entry.fingerprint];
           return job && (job.status === "queued" || job.status === "failed" || job.status === "uploading");
-        })
-        .slice(0, MAX_AUTO_UPLOAD_PER_RUN);
+        });
 
       if (entries.length === 0) {
         setStatus("done");
@@ -152,7 +150,7 @@ export default function AutoBackupManager() {
       }
 
       setStatus("uploading");
-      setMessage(`${runnable.length}개 파일을 백업합니다. 각 파일은 백업 완료 즉시 통화변환을 시작하고, 백업 큐는 다음 파일을 계속 처리합니다.`);
+      setMessage(`${runnable.length}개 파일을 중단 없이 끝까지 백업합니다. 각 파일은 백업 완료 즉시 통화변환을 시작하고, 백업 큐는 다음 파일을 계속 처리합니다.`);
       await uploadEntries(runnable, patchJobs, setCurrentFile, MAX_PARALLEL_UPLOADS);
 
       const remaining = countRemaining();
@@ -160,7 +158,7 @@ export default function AutoBackupManager() {
       setCurrentFile(null);
       setMessage(
         remaining > 0
-          ? `이번 묶음 처리가 끝났습니다. 남은 파일 ${remaining}개는 다시 접속하거나 이어서 백업 버튼을 누르면 계속 처리됩니다.`
+          ? `처리가 잠시 멈췄습니다. 남은 파일 ${remaining}개는 이어서 백업 버튼을 누르면 완료된 파일을 제외하고 계속 처리됩니다.`
           : "자동 백업이 완료되었습니다. 완료 파일은 보존되고 다음부터 새 파일만 처리합니다."
       );
     },
@@ -422,7 +420,7 @@ export default function AutoBackupManager() {
 
         <div className="text-[11px] text-ink-mute leading-5">
           폴더 스캔은 20초가 지나면 자동 중단됩니다. 계속 멈추면 `Recordings`, `Call`, `Voice Recorder` 같은 실제 녹음 폴더만 선택하거나
-          파일로 바로 백업을 눌러 여러 녹음 파일을 선택해 주세요. 한 번에 최대 {MAX_AUTO_UPLOAD_PER_RUN}개, 동시에 {MAX_PARALLEL_UPLOADS}개씩 업로드합니다.
+          파일로 바로 백업을 눌러 여러 녹음 파일을 선택해 주세요. 선택한 파일은 끝까지 순차 처리하고, 동시에 {MAX_PARALLEL_UPLOADS}개씩 업로드합니다.
         </div>
 
         {recentJobs.length > 0 && (
@@ -636,7 +634,9 @@ function makeJob(entry: AudioEntry, status: JobStatus, message: string): Persist
 
 function countRemaining() {
   const jobs = Object.values(loadState().jobs);
-  return jobs.filter((job) => job.status === "queued" || job.status === "uploading" || job.status === "failed").length;
+  return jobs.filter(
+    (job) => job.status === "queued" || job.status === "uploading" || job.status === "converting" || job.status === "failed"
+  ).length;
 }
 
 async function collectAudioFiles(handle: any, prefix: string, ctx: ScanContext): Promise<AudioEntry[]> {
