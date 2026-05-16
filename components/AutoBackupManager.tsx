@@ -30,7 +30,7 @@ const SCAN_TIMEOUT_MS = 20_000;
 const ACCEPT = "audio/*,.mp3,.m4a,.wav,.webm,.aac,.ogg,.oga,.3gp,.amr";
 
 type BackupStatus = "unsupported" | "idle" | "ready" | "scanning" | "uploading" | "done" | "error";
-type JobStatus = "queued" | "uploading" | "uploaded" | "skipped" | "failed";
+type JobStatus = "queued" | "uploading" | "converting" | "uploaded" | "skipped" | "failed";
 
 interface PersistedJob {
   fingerprint: string;
@@ -90,13 +90,14 @@ export default function AutoBackupManager() {
       total: jobs.length,
       queued: jobs.filter((job) => job.status === "queued").length,
       uploading: jobs.filter((job) => job.status === "uploading").length,
+      converting: jobs.filter((job) => job.status === "converting").length,
       uploaded: jobs.filter((job) => job.status === "uploaded").length,
       skipped: jobs.filter((job) => job.status === "skipped").length,
       failed: jobs.filter((job) => job.status === "failed").length,
     };
   }, [state]);
 
-  const activeTotal = stats.queued + stats.uploading + stats.uploaded + stats.failed;
+  const activeTotal = stats.queued + stats.uploading + stats.converting + stats.uploaded + stats.failed;
   const activeDone = stats.uploaded + stats.failed;
   const percent = activeTotal > 0 ? Math.round((activeDone / activeTotal) * 100) : 0;
 
@@ -151,7 +152,7 @@ export default function AutoBackupManager() {
       }
 
       setStatus("uploading");
-      setMessage(`${runnable.length}개 파일을 백업합니다. 중간에 꺼져도 완료된 파일은 보존되고, 다음에는 안 된 파일만 이어서 처리됩니다.`);
+      setMessage(`${runnable.length}개 파일을 백업합니다. 각 파일은 백업 완료 즉시 통화변환을 시작하고, 백업 큐는 다음 파일을 계속 처리합니다.`);
       await uploadEntries(runnable, patchJobs, setCurrentFile, MAX_PARALLEL_UPLOADS);
 
       const remaining = countRemaining();
@@ -356,19 +357,21 @@ export default function AutoBackupManager() {
             <div className="flex items-center justify-between gap-3 text-[11px] text-ink-mute mb-1">
               <span>진행률 {percent}%</span>
               <span className="text-right">
-                완료 {stats.uploaded} · 대기 {stats.queued} · 처리중 {stats.uploading} · 실패 {stats.failed} · 건너뜀 {stats.skipped}
+                완료 {stats.uploaded} · 대기 {stats.queued} · 업로드 {stats.uploading} · 변환중 {stats.converting} · 실패 {stats.failed} · 건너뜀 {stats.skipped}
               </span>
             </div>
             <div className="h-3 rounded-full bg-line-soft overflow-hidden flex">
               <div className="h-full bg-olive transition-all" style={{ width: `${activeTotal ? (stats.uploaded / activeTotal) * 100 : 0}%` }} />
               <div className="h-full bg-accent/70 transition-all" style={{ width: `${activeTotal ? (stats.failed / activeTotal) * 100 : 0}%` }} />
+              <div className="h-full bg-sky/70 transition-all" style={{ width: `${activeTotal ? (stats.converting / activeTotal) * 100 : 0}%` }} />
               <div className="h-full bg-gold/70 transition-all" style={{ width: `${activeTotal ? (stats.uploading / activeTotal) * 100 : 0}%` }} />
             </div>
           </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 mt-4">
+          <div className="grid grid-cols-2 sm:grid-cols-6 gap-2 mt-4">
             <Stat label="총 파일" value={stats.total} />
             <Stat label="업로드" value={stats.uploaded} />
+            <Stat label="변환중" value={stats.converting} />
             <Stat label="대기" value={stats.queued} />
             <Stat label="실패" value={stats.failed} />
             <Stat label="건너뜀" value={stats.skipped} />
@@ -452,7 +455,7 @@ function JobRow({ job }: { job: PersistedJob }) {
       <CheckCircle2 size={14} className="text-olive" />
     ) : job.status === "failed" ? (
       <XCircle size={14} className="text-accent" />
-    ) : job.status === "uploading" ? (
+    ) : job.status === "uploading" || job.status === "converting" ? (
       <UploadCloud size={14} className="text-gold" />
     ) : (
       <Clock3 size={14} className="text-ink-mute" />
@@ -478,6 +481,7 @@ function statusLabel(status: JobStatus) {
     queued: "대기",
     uploading: "업로드중",
     uploaded: "완료",
+    converting: "변환중",
     skipped: "건너뜀",
     failed: "실패",
   };
@@ -547,14 +551,15 @@ async function uploadEntries(
         return;
       }
 
-      patchJobs({ [entry.fingerprint]: makeJob(entry, "uploading", "백업 완료 · 네이버 클로바 텍스트 추출 중") });
-      const stt = await processRecordingImmediately(result.id);
-      patchJobs({
-        [entry.fingerprint]: makeJob(
-          entry,
-          stt.ok ? "uploaded" : "failed",
-          stt.ok ? "백업 완료 · 네이버 클로바 텍스트 추출 완료" : stt.error
-        ),
+      patchJobs({ [entry.fingerprint]: makeJob(entry, "converting", "백업 완료 · 통화변환 시작") });
+      void processRecordingImmediately(result.id).then((stt) => {
+        patchJobs({
+          [entry.fingerprint]: makeJob(
+            entry,
+            stt.ok ? "uploaded" : "failed",
+            stt.ok ? "백업 완료 · 통화변환 완료" : stt.error
+          ),
+        });
       });
     } catch (error) {
       patchJobs({
