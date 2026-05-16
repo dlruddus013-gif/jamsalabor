@@ -1,6 +1,8 @@
 "use client";
 
+import { useEffect } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   Smile,
   Meh,
@@ -52,6 +54,17 @@ interface Props {
 }
 
 export default function SearchResults({ hits, query, hasFilters }: Props) {
+  const router = useRouter();
+  const hasLiveJobs = hits.some((hit) => hit.status === "uploading" || hit.status === "processing");
+
+  useEffect(() => {
+    if (!hasLiveJobs) return;
+    const timer = window.setInterval(() => {
+      router.refresh();
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [hasLiveJobs, router]);
+
   if (hits.length === 0) {
     return (
       <div className="rounded-2xl bg-paper border border-line p-12 text-center">

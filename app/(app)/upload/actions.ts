@@ -118,6 +118,7 @@ export async function registerDirectUploadedRecording(
       .from("recordings")
       .insert({
         owner_id: user.id,
+        title: title ?? originalName.replace(/\.[^.]+$/, ""),
         recorded_at: new Date().toISOString(),
         duration_sec: 0,
         audio_path: path,
@@ -288,6 +289,7 @@ export async function uploadRecording(
       .from("recordings")
       .insert({
         owner_id: user.id,
+        title: title ?? file.name.replace(/\.[^.]+$/, ""),
         recorded_at: new Date().toISOString(),
         duration_sec: 0, // STT 워커가 채움
         audio_path: path,
@@ -316,7 +318,7 @@ export async function uploadRecording(
     const { error: jobError } = await admin.from("stt_jobs").insert({
       recording_id: recording.id,
       status: "queued",
-      engine: "whisper-large-v3",
+      engine: "naver-clova-speech",
       language: "ko",
       priority: 100,
     });
