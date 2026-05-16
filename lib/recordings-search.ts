@@ -86,9 +86,60 @@ async function searchSupabase(p: SearchParams): Promise<SearchResult> {
 
   if (error) {
     console.error("[search] RPC error:", error);
-    return { hits: [], total: 0, source: "supabase" };
+    return searchSupabaseTable(supabase, p);
   }
   const hits = data ?? [];
+  return { hits, total: hits.length, source: "supabase" };
+}
+
+async function searchSupabaseTable(
+  supabase: ReturnType<typeof createSupabaseAdminClient>,
+  p: SearchParams
+): Promise<SearchResult> {
+  let query = supabase
+    .from("recordings")
+    .select(
+      "id, recorded_at, title, customer_name, customer_phone, category, status, sentiment, risk_level, resolved, escalated, duration_sec, excerpt, tags"
+    );
+
+  if (p.category) query = query.eq("category", p.category);
+  if (p.risk && p.risk !== "any") query = query.eq("risk_level", p.risk);
+  if (p.dateFrom) query = query.gte("recorded_at", p.dateFrom);
+  if (p.dateTo) query = query.lte("recorded_at", p.dateTo);
+
+  const q = p.query?.trim();
+  if (q) {
+    query = query.or(`title.ilike.%${q}%,customer_name.ilike.%${q}%,customer_phone.ilike.%${q}%,excerpt.ilike.%${q}%`);
+  }
+
+  const { data, error } = await query
+    .order("recorded_at", { ascending: false })
+    .limit(p.limit ?? 100);
+
+  if (error) {
+    console.error("[search] table fallback failed:", error);
+    return { hits: [], total: 0, source: "supabase" };
+  }
+
+  const hits: SearchHit[] = (data ?? []).map((row: any) => ({
+    id: row.id,
+    recorded_at: row.recorded_at,
+    title: row.title,
+    customer_name: row.customer_name,
+    customer_phone: row.customer_phone,
+    category: row.category,
+    status: row.status,
+    sentiment: row.sentiment,
+    risk_level: row.risk_level,
+    resolved: row.resolved ?? false,
+    escalated: row.escalated ?? false,
+    duration_sec: row.duration_sec ?? 0,
+    excerpt: row.excerpt,
+    tags: row.tags ?? [],
+    matched_in: "meta",
+    snippet: row.excerpt || row.title || row.customer_name || row.customer_phone || "",
+  }));
+
   return { hits, total: hits.length, source: "supabase" };
 }
 
