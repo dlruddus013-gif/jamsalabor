@@ -42,6 +42,7 @@ export type UploadErrorCode =
   | "no_file"
   | "invalid_file"
   | "unauthenticated"
+  | "quota_exceeded"
   | "storage_error"
   | "db_error"
   | "unknown";
@@ -107,6 +108,18 @@ export async function uploadRecording(
         ok: false,
         error: "로그인이 필요합니다.",
         code: "unauthenticated",
+      };
+    }
+
+    const { data: canStore, error: quotaError } = await supabase.rpc("can_store_recording", {
+      p_owner_id: user.id,
+      p_bytes: file.size,
+    });
+    if (!quotaError && canStore === false) {
+      return {
+        ok: false,
+        error: "클라우드 보관 용량 1TB 한도를 초과합니다. 기존 파일을 정리하거나 할당량을 늘려 주세요.",
+        code: "quota_exceeded",
       };
     }
 

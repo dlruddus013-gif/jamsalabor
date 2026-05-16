@@ -38,6 +38,7 @@ export async function POST(req: Request) {
   const originalPath = String(formData.get("originalPath") || "");
   const recordedAt = String(formData.get("recordedAt") || "") || new Date().toISOString();
   const title = String(formData.get("title") || raw.name.replace(/\.[^.]+$/, "")).slice(0, 200);
+  const ownerId = String(formData.get("ownerId") || process.env.MOBILE_BACKUP_OWNER_ID || "").trim() || null;
 
   if (sha256) {
     const { data: existing } = await admin
@@ -55,6 +56,19 @@ export async function POST(req: Request) {
   const storagePath = `mobile-backups/${deviceId}/${Date.now()}_${safeName}`;
   const contentType = raw.type || `audio/${ext}`;
 
+  if (ownerId) {
+    const { data: canStore, error: quotaError } = await admin.rpc("can_store_recording", {
+      p_owner_id: ownerId,
+      p_bytes: raw.size,
+    });
+    if (!quotaError && canStore === false) {
+      return NextResponse.json(
+        { error: "cloud storage quota exceeded", code: "quota_exceeded" },
+        { status: 413 }
+      );
+    }
+  }
+
   const { error: uploadError } = await admin.storage
     .from(STORAGE_BUCKET)
     .upload(storagePath, raw, { contentType, upsert: false, cacheControl: "3600" });
@@ -65,6 +79,7 @@ export async function POST(req: Request) {
   const { data: recording, error: insertError } = await admin
     .from("recordings")
     .insert({
+      owner_id: ownerId,
       recorded_at: recordedAt,
       duration_sec: Number(formData.get("durationSec") || 0),
       audio_path: storagePath,
@@ -114,4 +129,3 @@ export async function POST(req: Request) {
 
   return NextResponse.json({ ok: true, id: recording.id, queued: true });
 }
-
