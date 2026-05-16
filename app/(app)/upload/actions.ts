@@ -51,6 +51,124 @@ export type UploadResult =
   | { ok: true; id: string; mock?: boolean }
   | { ok: false; error: string; code: UploadErrorCode };
 
+export async function registerDirectUploadedRecording(
+  formData: FormData
+): Promise<UploadResult> {
+  if (!isUsingSupabaseServer()) {
+    await new Promise((r) => setTimeout(r, 250));
+    return { ok: true, id: "rec_001", mock: true };
+  }
+
+  try {
+    const supabase = await createSupabaseServerClient();
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return { ok: false, error: "로그인이 필요합니다.", code: "unauthenticated" };
+    }
+
+    const path = String(formData.get("path") || "");
+    const originalName = String(formData.get("originalName") || "");
+    const contentType = String(formData.get("contentType") || "audio/mpeg");
+    const size = Number(formData.get("size") || 0);
+    const sourceInput = formData.get("source");
+    const source: AllowedSource =
+      typeof sourceInput === "string" && (ALLOWED_SOURCES as readonly string[]).includes(sourceInput)
+        ? (sourceInput as AllowedSource)
+        : "upload";
+    const titleInput = formData.get("title");
+    const title = typeof titleInput === "string" && titleInput.trim().length > 0 ? titleInput.trim().slice(0, 200) : null;
+
+    if (!path || !path.startsWith(`${user.id}/`)) {
+      return { ok: false, error: "Storage 경로가 올바르지 않습니다.", code: "storage_error" };
+    }
+    if (!originalName || !Number.isFinite(size) || size <= 0) {
+      return { ok: false, error: "업로드 메타데이터가 올바르지 않습니다.", code: "invalid_file" };
+    }
+
+    const validation = validateAudioFile({ name: originalName, size, type: contentType });
+    if (!validation.valid) {
+      return { ok: false, error: validation.reason, code: "invalid_file" };
+    }
+
+    const { data: canStore, error: quotaError } = await supabase.rpc("can_store_recording", {
+      p_owner_id: user.id,
+      p_bytes: size,
+    });
+    if (!quotaError && canStore === false) {
+      return {
+        ok: false,
+        error: "클라우드 보관 용량 1TB 한도를 초과합니다. 기존 파일을 정리하거나 할당량을 늘려 주세요.",
+        code: "quota_exceeded",
+      };
+    }
+
+    const metadata: Record<string, unknown> = { original_filename: originalName, direct_storage_upload: true };
+    if (title) metadata.title = title;
+
+    const { data: recording, error: insertError } = await supabase
+      .from("recordings")
+      .insert({
+        owner_id: user.id,
+        recorded_at: new Date().toISOString(),
+        duration_sec: 0,
+        audio_path: path,
+        audio_mime: contentType,
+        audio_size_bytes: size,
+        status: "processing",
+        source,
+        metadata,
+      })
+      .select("id")
+      .single();
+
+    if (insertError || !recording) {
+      await rollbackStorage(path);
+      return {
+        ok: false,
+        error: `메타데이터 저장 실패: ${insertError?.message ?? "unknown"}`,
+        code: "db_error",
+      };
+    }
+
+    const admin = createSupabaseAdminClient();
+    const { error: jobError } = await admin.from("stt_jobs").insert({
+      recording_id: recording.id,
+      status: "queued",
+      engine: "naver-clova-speech",
+      language: "ko",
+      priority: 100,
+    });
+    if (jobError) console.error("[direct-upload] stt_jobs insert failed:", jobError);
+
+    await admin.from("audit_logs").insert({
+      user_id: user.id,
+      action: "create",
+      resource_type: "recording",
+      resource_id: recording.id,
+      metadata: {
+        original_filename: originalName,
+        size_bytes: size,
+        mime: contentType,
+        path,
+        source,
+        direct_storage_upload: true,
+        ...(title ? { title } : {}),
+      },
+    });
+
+    revalidatePath("/recordings");
+    revalidatePath("/dashboard");
+    return { ok: true, id: recording.id };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "알 수 없는 오류";
+    return { ok: false, error: `예기치 못한 오류: ${msg}`, code: "unknown" };
+  }
+}
+
 export async function uploadRecording(
   formData: FormData
 ): Promise<UploadResult> {

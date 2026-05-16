@@ -29,7 +29,7 @@ export const ACCEPTED_MIME_PATTERNS: RegExp[] = [
   /^video\/3gpp$/,
 ];
 
-export const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100 MB
+export const MAX_FILE_SIZE = 1024 * 1024 * 1024; // 1 GB
 export const MIN_FILE_SIZE = 100;               // 100 B (그 미만은 잘못된 파일)
 
 /**

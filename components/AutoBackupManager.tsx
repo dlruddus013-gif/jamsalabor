@@ -13,8 +13,9 @@ import {
   UploadCloud,
   XCircle,
 } from "lucide-react";
-import { uploadRecording } from "@/app/(app)/upload/actions";
-import { ACCEPTED_EXTENSIONS, formatBytes, validateAudioFile } from "@/lib/upload";
+import { registerDirectUploadedRecording, uploadRecording } from "@/app/(app)/upload/actions";
+import { createSupabaseBrowserClient, isUsingSupabase } from "@/lib/supabase/client";
+import { ACCEPTED_EXTENSIONS, formatBytes, sanitizeFilename, STORAGE_BUCKET, validateAudioFile } from "@/lib/upload";
 import { cn } from "@/lib/cn";
 
 const DB_NAME = "jamsa-auto-backup";
@@ -529,12 +530,13 @@ async function uploadEntries(
     }
 
     const formData = new FormData();
-    formData.append("file", entry.file);
     formData.append("source", "phone_backup");
     formData.append("title", entry.file.name.replace(/\.[^.]+$/, ""));
 
     try {
-      const result = await uploadRecording(formData);
+      const result = isUsingSupabase()
+        ? await uploadLargeFileDirectly(entry, formData)
+        : await uploadSmallFileThroughServer(entry, formData);
       if (!result.ok) {
         patchJobs({ [entry.fingerprint]: makeJob(entry, "failed", result.error) });
         return;
@@ -559,6 +561,42 @@ async function uploadEntries(
       });
     }
   });
+}
+
+async function uploadSmallFileThroughServer(entry: AudioEntry, formData: FormData) {
+  formData.append("file", entry.file);
+  return uploadRecording(formData);
+}
+
+async function uploadLargeFileDirectly(entry: AudioEntry, metadata: FormData) {
+  const supabase = createSupabaseBrowserClient();
+  const {
+    data: { user },
+    error: authError,
+  } = await supabase.auth.getUser();
+
+  if (authError || !user) {
+    return { ok: false as const, error: "로그인이 필요합니다.", code: "unauthenticated" as const };
+  }
+
+  const safeName = sanitizeFilename(entry.file.name, 90);
+  const storagePath = `${user.id}/${Date.now()}_${safeName}`;
+  const contentType = entry.file.type || `audio/${entry.file.name.split(".").pop() ?? "mpeg"}`;
+  const { error: uploadError } = await supabase.storage.from(STORAGE_BUCKET).upload(storagePath, entry.file, {
+    contentType,
+    upsert: false,
+    cacheControl: "3600",
+  });
+
+  if (uploadError) {
+    return { ok: false as const, error: `Storage 직접 업로드 실패: ${uploadError.message}`, code: "storage_error" as const };
+  }
+
+  metadata.append("path", storagePath);
+  metadata.append("originalName", entry.file.name);
+  metadata.append("contentType", contentType);
+  metadata.append("size", String(entry.file.size));
+  return registerDirectUploadedRecording(metadata);
 }
 
 async function processRecordingImmediately(recordingId: string): Promise<{ ok: true } | { ok: false; error: string }> {
