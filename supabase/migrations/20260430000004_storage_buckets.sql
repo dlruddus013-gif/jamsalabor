@@ -37,6 +37,7 @@ on conflict (id) do update
 -- ─────────────────────────────────────────────────────────
 
 -- SELECT
+drop policy if exists "recordings: owner read" on storage.objects;
 create policy "recordings: owner read"
   on storage.objects for select
   to authenticated
@@ -46,6 +47,7 @@ create policy "recordings: owner read"
   );
 
 -- INSERT
+drop policy if exists "recordings: owner upload" on storage.objects;
 create policy "recordings: owner upload"
   on storage.objects for insert
   to authenticated
@@ -55,6 +57,7 @@ create policy "recordings: owner upload"
   );
 
 -- UPDATE (재업로드)
+drop policy if exists "recordings: owner update" on storage.objects;
 create policy "recordings: owner update"
   on storage.objects for update
   to authenticated
@@ -64,6 +67,7 @@ create policy "recordings: owner update"
   );
 
 -- DELETE
+drop policy if exists "recordings: owner delete" on storage.objects;
 create policy "recordings: owner delete"
   on storage.objects for delete
   to authenticated

@@ -22,22 +22,26 @@ alter table public.audit_logs           enable row level security;
 -- 향후 admin role 분리 시 별도 정책 추가.
 -- ─────────────────────────────────────────────────────────
 
+drop policy if exists "recordings: owner select" on public.recordings;
 create policy "recordings: owner select"
   on public.recordings for select
   to authenticated
   using (owner_id = auth.uid());
 
+drop policy if exists "recordings: owner insert" on public.recordings;
 create policy "recordings: owner insert"
   on public.recordings for insert
   to authenticated
   with check (owner_id = auth.uid());
 
+drop policy if exists "recordings: owner update" on public.recordings;
 create policy "recordings: owner update"
   on public.recordings for update
   to authenticated
   using (owner_id = auth.uid())
   with check (owner_id = auth.uid());
 
+drop policy if exists "recordings: owner delete" on public.recordings;
 create policy "recordings: owner delete"
   on public.recordings for delete
   to authenticated
@@ -50,6 +54,7 @@ create policy "recordings: owner delete"
 --      insert/update/delete 는 service_role 만 (워커가 STT 결과 기록).
 -- ─────────────────────────────────────────────────────────
 
+drop policy if exists "transcript_segments: parent owner select" on public.transcript_segments;
 create policy "transcript_segments: parent owner select"
   on public.transcript_segments for select
   to authenticated
@@ -71,6 +76,7 @@ create policy "transcript_segments: parent owner select"
 --      재생성 트리거 권한도 owner 본인이 가질 수 있음 (insert 허용).
 -- ─────────────────────────────────────────────────────────
 
+drop policy if exists "recording_summaries: parent owner select" on public.recording_summaries;
 create policy "recording_summaries: parent owner select"
   on public.recording_summaries for select
   to authenticated
@@ -82,6 +88,7 @@ create policy "recording_summaries: parent owner select"
     )
   );
 
+drop policy if exists "recording_summaries: parent owner insert" on public.recording_summaries;
 create policy "recording_summaries: parent owner insert"
   on public.recording_summaries for insert
   to authenticated
@@ -100,6 +107,7 @@ create policy "recording_summaries: parent owner insert"
 --      삽입/갱신은 service_role 전용 (워커).
 -- ─────────────────────────────────────────────────────────
 
+drop policy if exists "stt_jobs: parent owner select" on public.stt_jobs;
 create policy "stt_jobs: parent owner select"
   on public.stt_jobs for select
   to authenticated
@@ -118,6 +126,7 @@ create policy "stt_jobs: parent owner select"
 --      쓰기는 service_role 전용 (서버에서 강제 기록).
 -- ─────────────────────────────────────────────────────────
 
+drop policy if exists "audit_logs: own select" on public.audit_logs;
 create policy "audit_logs: own select"
   on public.audit_logs for select
   to authenticated
