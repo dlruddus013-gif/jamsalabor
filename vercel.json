@@ -1,0 +1,9 @@
+{
+  "crons": [
+    {
+      "path": "/api/jobs/process-recording",
+      "schedule": "*/5 * * * *"
+    }
+  ]
+}
+

@@ -5,7 +5,7 @@
 // 'use client' / 'use server' 지시어 없는 순수 모듈이므로 양쪽 모두 import 가능.
 // ─────────────────────────────────────────────────────────
 
-export const ACCEPTED_EXTENSIONS = ["mp3", "m4a", "wav", "webm"] as const;
+export const ACCEPTED_EXTENSIONS = ["mp3", "m4a", "wav", "webm", "aac", "ogg", "oga", "3gp", "amr"] as const;
 export type AcceptedExt = (typeof ACCEPTED_EXTENSIONS)[number];
 
 /**
@@ -22,6 +22,11 @@ export const ACCEPTED_MIME_PATTERNS: RegExp[] = [
   /^audio\/x-wav$/,
   /^audio\/wave$/,
   /^audio\/webm$/,
+  /^audio\/aac$/,
+  /^audio\/ogg$/,
+  /^audio\/amr$/,
+  /^audio\/3gpp$/,
+  /^video\/3gpp$/,
 ];
 
 export const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100 MB
@@ -86,7 +91,7 @@ export function validateAudioFile(
   if (!ACCEPTED_EXTENSIONS.includes(ext as AcceptedExt)) {
     return {
       valid: false,
-      reason: `지원하지 않는 형식 .${ext} — mp3, m4a, wav, webm 만 허용됩니다.`,
+      reason: `지원하지 않는 형식 .${ext} 입니다. ${ACCEPTED_EXTENSIONS.join(", ")} 파일만 허용합니다.`,
     };
   }
 
