@@ -64,6 +64,16 @@ export interface FailedJob {
   retry_count: number;
 }
 
+export interface DashboardStatRecord {
+  id: string;
+  recorded_at: string;
+  status: RecordingStatus;
+  category: string | null;
+  risk_level: RiskLevel | null;
+  duration_sec: number;
+  customer_phone: string | null;
+}
+
 export interface DashboardData {
   kpis: DashboardKpis;
   categories: CategoryCount[];
@@ -71,6 +81,7 @@ export interface DashboardData {
   daily: DailyVolumePoint[];
   recent: RecentRecording[];
   failedJobs: FailedJob[];
+  statRecords: DashboardStatRecord[];
   source: "supabase" | "mock";
 }
 
@@ -172,6 +183,15 @@ function loadFromMock(): DashboardData {
       error_message: "mock 데이터에서 임의로 설정된 실패 상태입니다.",
       retry_count: 1,
     }));
+  const statRecords: DashboardStatRecord[] = all.map((r) => ({
+    id: r.id,
+    recorded_at: r.recorded_at,
+    status: r.status,
+    category: r.category,
+    risk_level: r.risk_level,
+    duration_sec: r.duration_sec,
+    customer_phone: r.customer_phone,
+  }));
 
   return {
     kpis: {
@@ -186,6 +206,7 @@ function loadFromMock(): DashboardData {
     daily,
     recent,
     failedJobs,
+    statRecords,
     source: "mock",
   };
 }
@@ -273,6 +294,12 @@ async function loadFromSupabase(): Promise<DashboardData> {
     .order("recorded_at", { ascending: false })
     .limit(6);
 
+  const statRowsP = admin
+    .from("recordings")
+    .select("id, recorded_at, status, category, risk_level, duration_sec, customer_phone")
+    .order("recorded_at", { ascending: false })
+    .limit(50000);
+
   const [
     total,
     todayRes,
@@ -284,6 +311,7 @@ async function loadFromSupabase(): Promise<DashboardData> {
     agentRows,
     dailyRows,
     recentRows,
+    statRows,
   ] = await Promise.all([
     totalP,
     todayP,
@@ -295,6 +323,7 @@ async function loadFromSupabase(): Promise<DashboardData> {
     agentsP,
     dailyP,
     recentP,
+    statRowsP,
   ]);
 
   // ── 카테고리 집계 ────────────────────────────────────
@@ -361,6 +390,26 @@ async function loadFromSupabase(): Promise<DashboardData> {
       retry_count: r.retry_count ?? 0,
     };
   });
+  const statRecords: DashboardStatRecord[] = (statRows.data ?? []).map((row: any) => {
+    const r = row as {
+      id: string;
+      recorded_at: string;
+      status: RecordingStatus | null;
+      category: string | null;
+      risk_level: RiskLevel | null;
+      duration_sec: number | null;
+      customer_phone: string | null;
+    };
+    return {
+      id: r.id,
+      recorded_at: r.recorded_at,
+      status: r.status ?? "processing",
+      category: r.category,
+      risk_level: r.risk_level,
+      duration_sec: r.duration_sec ?? 0,
+      customer_phone: r.customer_phone,
+    };
+  });
 
   return {
     kpis: {
@@ -375,6 +424,7 @@ async function loadFromSupabase(): Promise<DashboardData> {
     daily,
     recent,
     failedJobs,
+    statRecords,
     source: "supabase",
   };
 }

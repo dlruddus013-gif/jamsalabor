@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState, useTransition } from "react";
+import { useMemo, useState, useTransition } from "react";
 import {
   LineChart,
   Line,
@@ -30,13 +30,16 @@ import {
   Inbox,
   Users,
   Tag,
+  CalendarDays,
+  TimerReset,
+  FileBarChart,
 } from "lucide-react";
 import StatusBadge from "@/components/StatusBadge";
 import RiskBadge from "@/components/RiskBadge";
 import { cn } from "@/lib/cn";
 import { formatDuration, maskPhone } from "@/lib/mock-data";
 import { retryFailedJob } from "./actions";
-import type { DashboardData, FailedJob } from "@/lib/dashboard";
+import type { DashboardData, DashboardStatRecord, FailedJob } from "@/lib/dashboard";
 
 // ─────────────────────────────────────────────────────────
 // 색상 토큰 (recharts 가 string 으로 받음)
@@ -58,7 +61,16 @@ const C = {
 // ─────────────────────────────────────────────────────────
 
 export default function DashboardView({ data }: { data: DashboardData }) {
-  const { kpis, categories, agents, daily, recent, failedJobs, source } = data;
+  const { kpis, categories, agents, daily, recent, failedJobs, source, statRecords } = data;
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const monthStartIso = `${todayIso.slice(0, 7)}-01`;
+  const [statMode, setStatMode] = useState<"month" | "year" | "range">("month");
+  const [rangeFrom, setRangeFrom] = useState(monthStartIso);
+  const [rangeTo, setRangeTo] = useState(todayIso);
+  const periodStats = useMemo(
+    () => buildPeriodStats(statRecords, statMode, rangeFrom, rangeTo),
+    [statRecords, statMode, rangeFrom, rangeTo]
+  );
 
   const dailyTrend = (() => {
     if (daily.length < 2) return 0;
@@ -124,6 +136,16 @@ export default function DashboardView({ data }: { data: DashboardData }) {
           urgent={kpis.high_risk_count > 0}
         />
       </div>
+
+      <PeriodStatsPanel
+        mode={statMode}
+        onModeChange={setStatMode}
+        rangeFrom={rangeFrom}
+        rangeTo={rangeTo}
+        onRangeFrom={setRangeFrom}
+        onRangeTo={setRangeTo}
+        stats={periodStats}
+      />
 
       {/* 7일 라인 차트 + 상담유형 막대 */}
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-3">
@@ -355,6 +377,212 @@ export default function DashboardView({ data }: { data: DashboardData }) {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────
+// 월별/연도별/기간별 통계
+// ─────────────────────────────────────────────────────────
+
+interface PeriodStats {
+  title: string;
+  total: number;
+  completed: number;
+  processing: number;
+  failed: number;
+  highRisk: number;
+  uniquePhones: number;
+  totalDurationSec: number;
+  avgPerDay: number;
+  topCategory: string;
+  points: { label: string; count: number; failed: number; highRisk: number }[];
+  categories: { label: string; count: number }[];
+  statuses: { label: string; count: number }[];
+}
+
+function PeriodStatsPanel({
+  mode,
+  onModeChange,
+  rangeFrom,
+  rangeTo,
+  onRangeFrom,
+  onRangeTo,
+  stats,
+}: {
+  mode: "month" | "year" | "range";
+  onModeChange: (mode: "month" | "year" | "range") => void;
+  rangeFrom: string;
+  rangeTo: string;
+  onRangeFrom: (value: string) => void;
+  onRangeTo: (value: string) => void;
+  stats: PeriodStats;
+}) {
+  return (
+    <section className="rounded-2xl bg-paper border border-line p-5">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <div className="text-[11px] tracking-[0.2em] uppercase text-gold flex items-center gap-1.5">
+            <FileBarChart size={12} /> Statistics
+          </div>
+          <h2 className="font-display text-[20px] font-bold mt-0.5">
+            월별 · 연도별 · 기간별 통계
+          </h2>
+          <p className="text-[12px] text-ink-mute mt-1">
+            {stats.title} 기준으로 상담량, 실패, 위험도, 카테고리, 평균 처리량을 요약합니다.
+          </p>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          {[
+            ["month", "월별"],
+            ["year", "연도별"],
+            ["range", "기간별"],
+          ].map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => onModeChange(key as "month" | "year" | "range")}
+              className={cn(
+                "h-9 px-3 rounded-xl text-[12px] font-semibold border",
+                mode === key
+                  ? "bg-ink text-cream border-ink"
+                  : "bg-cream text-ink-soft border-line hover:text-ink"
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {mode === "range" && (
+        <div className="mt-4 flex flex-wrap gap-2 items-center">
+          <label className="text-[11px] text-ink-mute">시작일</label>
+          <input
+            type="date"
+            value={rangeFrom}
+            onChange={(e) => onRangeFrom(e.target.value)}
+            className="h-9 rounded-xl border border-line bg-cream px-3 text-[12px] outline-none focus:border-accent"
+          />
+          <label className="text-[11px] text-ink-mute">종료일</label>
+          <input
+            type="date"
+            value={rangeTo}
+            onChange={(e) => onRangeTo(e.target.value)}
+            className="h-9 rounded-xl border border-line bg-cream px-3 text-[12px] outline-none focus:border-accent"
+          />
+        </div>
+      )}
+
+      <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-2 mt-4">
+        <MiniStat icon={CalendarDays} label="총 상담" value={stats.total} />
+        <MiniStat icon={CheckCircle2} label="완료" value={stats.completed} tone="olive" />
+        <MiniStat icon={Hourglass} label="처리중" value={stats.processing} tone="gold" />
+        <MiniStat icon={XCircle} label="실패" value={stats.failed} tone="accent" />
+        <MiniStat icon={ShieldAlert} label="고위험" value={stats.highRisk} tone="accent" />
+        <MiniStat icon={Phone} label="고유 번호" value={stats.uniquePhones} tone="sky" />
+        <MiniStat icon={TimerReset} label="일평균" value={stats.avgPerDay} suffix="건" />
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-3 mt-4">
+        <div className="xl:col-span-2 rounded-xl bg-cream/45 border border-line-soft p-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="text-[13px] font-bold">기간 흐름</div>
+            <div className="text-[11px] text-ink-mute">
+              총 통화시간 {formatDuration(stats.totalDurationSec)}
+            </div>
+          </div>
+          <div className="h-[210px]">
+            <ResponsiveContainer>
+              <BarChart data={stats.points} margin={{ top: 6, right: 8, left: -12, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={C.line} />
+                <XAxis dataKey="label" tick={{ fontSize: 10, fill: C.inkMute }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fontSize: 10, fill: C.inkMute }} axisLine={false} tickLine={false} allowDecimals={false} />
+                <Tooltip
+                  contentStyle={{
+                    background: C.ink,
+                    border: "none",
+                    borderRadius: 8,
+                    color: "#FAF6EC",
+                    fontSize: 12,
+                  }}
+                  formatter={(v, name) => [`${v}건`, name === "failed" ? "실패" : name === "highRisk" ? "고위험" : "상담"]}
+                />
+                <Bar dataKey="count" fill={C.sky} radius={[5, 5, 0, 0]} />
+                <Bar dataKey="failed" fill={C.accent} radius={[5, 5, 0, 0]} />
+                <Bar dataKey="highRisk" fill={C.gold} radius={[5, 5, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        <div className="rounded-xl bg-cream/45 border border-line-soft p-4">
+          <div className="text-[13px] font-bold mb-3">세부 요약</div>
+          <div className="space-y-3">
+            <SummaryLine label="최다 유형" value={stats.topCategory} />
+            <SummaryLine label="완료율" value={`${percent(stats.completed, stats.total)}%`} />
+            <SummaryLine label="실패율" value={`${percent(stats.failed, stats.total)}%`} danger={stats.failed > 0} />
+            <SummaryLine label="고위험 비중" value={`${percent(stats.highRisk, stats.total)}%`} danger={stats.highRisk > 0} />
+          </div>
+
+          <div className="mt-4">
+            <div className="text-[11px] font-bold text-ink-soft mb-2">카테고리 Top 5</div>
+            {stats.categories.length === 0 ? (
+              <div className="text-[11px] text-ink-mute">분류된 통화가 없습니다.</div>
+            ) : (
+              <div className="space-y-2">
+                {stats.categories.slice(0, 5).map((c) => (
+                  <CategoryRow key={c.label} label={c.label} count={c.count} total={stats.categories[0]?.count ?? 1} />
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function MiniStat({
+  icon: Icon,
+  label,
+  value,
+  tone = "ink",
+  suffix = "",
+}: {
+  icon: typeof Database;
+  label: string;
+  value: number;
+  tone?: "ink" | "sky" | "gold" | "accent" | "olive";
+  suffix?: string;
+}) {
+  const toneClass = {
+    ink: "bg-line-soft text-ink-soft",
+    sky: "bg-sky/15 text-sky",
+    gold: "bg-gold/15 text-gold",
+    accent: "bg-accent/15 text-accent",
+    olive: "bg-olive/15 text-olive",
+  }[tone];
+  return (
+    <div className="rounded-xl bg-cream border border-line-soft px-3 py-2.5">
+      <div className={cn("w-7 h-7 rounded-lg flex items-center justify-center mb-2", toneClass)}>
+        <Icon size={13} />
+      </div>
+      <div className="text-[10px] text-ink-mute">{label}</div>
+      <div className="font-display num text-[21px] font-bold">
+        {value.toLocaleString()}
+        {suffix && <span className="ml-0.5 text-[11px] text-ink-mute font-sans">{suffix}</span>}
+      </div>
+    </div>
+  );
+}
+
+function SummaryLine({ label, value, danger }: { label: string; value: string; danger?: boolean }) {
+  return (
+    <div className="flex items-center justify-between gap-2 text-[12px]">
+      <span className="text-ink-mute">{label}</span>
+      <span className={cn("font-bold text-right", danger ? "text-accent" : "text-ink")}>{value}</span>
     </div>
   );
 }
@@ -642,4 +870,129 @@ function todayKR() {
   const d = new Date();
   const days = ["일", "월", "화", "수", "목", "금", "토"];
   return `${d.getMonth() + 1}월 ${d.getDate()}일 (${days[d.getDay()]})`;
+}
+
+function buildPeriodStats(
+  records: DashboardStatRecord[],
+  mode: "month" | "year" | "range",
+  rangeFrom: string,
+  rangeTo: string
+): PeriodStats {
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const currentMonth = `${currentYear}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  const start = mode === "year" ? `${currentYear}-01-01` : mode === "month" ? `${currentMonth}-01` : rangeFrom;
+  const end = mode === "year" ? `${currentYear}-12-31` : mode === "month" ? lastDayOfMonth(currentMonth) : rangeTo;
+  const startTime = Date.parse(`${start}T00:00:00`);
+  const endTime = Date.parse(`${end}T23:59:59`);
+  const filtered = records.filter((record) => {
+    const time = Date.parse(record.recorded_at);
+    return Number.isFinite(time) && time >= startTime && time <= endTime;
+  });
+
+  const categoryMap = new Map<string, number>();
+  const statusMap = new Map<string, number>();
+  const phoneSet = new Set<string>();
+  let completed = 0;
+  let processing = 0;
+  let failed = 0;
+  let highRisk = 0;
+  let totalDurationSec = 0;
+
+  for (const record of filtered) {
+    const category = record.category || "미분류";
+    categoryMap.set(category, (categoryMap.get(category) ?? 0) + 1);
+    statusMap.set(record.status, (statusMap.get(record.status) ?? 0) + 1);
+    if (record.customer_phone) phoneSet.add(record.customer_phone.replace(/\D/g, ""));
+    if (record.status === "completed") completed += 1;
+    if (record.status === "processing" || record.status === "uploading") processing += 1;
+    if (record.status === "failed") failed += 1;
+    if (record.risk_level === "high" || record.risk_level === "critical") highRisk += 1;
+    totalDurationSec += record.duration_sec || 0;
+  }
+
+  const points = buildPeriodPoints(filtered, mode, start, end);
+  const dayCount = Math.max(1, Math.round((endTime - startTime) / 86400000) + 1);
+  const categories = Array.from(categoryMap.entries())
+    .map(([label, count]) => ({ label, count }))
+    .sort((a, b) => b.count - a.count);
+  const statuses = Array.from(statusMap.entries())
+    .map(([label, count]) => ({ label, count }))
+    .sort((a, b) => b.count - a.count);
+
+  return {
+    title:
+      mode === "year"
+        ? `${currentYear}년`
+        : mode === "month"
+          ? `${currentYear}년 ${now.getMonth() + 1}월`
+          : `${start} ~ ${end}`,
+    total: filtered.length,
+    completed,
+    processing,
+    failed,
+    highRisk,
+    uniquePhones: Array.from(phoneSet).filter(Boolean).length,
+    totalDurationSec,
+    avgPerDay: Math.round((filtered.length / dayCount) * 10) / 10,
+    topCategory: categories[0]?.label ?? "없음",
+    points,
+    categories,
+    statuses,
+  };
+}
+
+function buildPeriodPoints(
+  records: DashboardStatRecord[],
+  mode: "month" | "year" | "range",
+  start: string,
+  end: string
+) {
+  const map = new Map<string, { label: string; count: number; failed: number; highRisk: number }>();
+
+  if (mode === "year") {
+    for (let m = 1; m <= 12; m++) {
+      const key = `${start.slice(0, 4)}-${String(m).padStart(2, "0")}`;
+      map.set(key, { label: `${m}월`, count: 0, failed: 0, highRisk: 0 });
+    }
+  } else {
+    const startDate = new Date(`${start}T00:00:00`);
+    const endDate = new Date(`${end}T00:00:00`);
+    const cursor = new Date(startDate);
+    while (cursor <= endDate && map.size < 62) {
+      const key = cursor.toISOString().slice(0, 10);
+      map.set(key, { label: `${cursor.getMonth() + 1}/${cursor.getDate()}`, count: 0, failed: 0, highRisk: 0 });
+      cursor.setDate(cursor.getDate() + 1);
+    }
+  }
+
+  for (const record of records) {
+    const date = new Date(record.recorded_at);
+    const key = mode === "year" ? record.recorded_at.slice(0, 7) : record.recorded_at.slice(0, 10);
+    const existing = map.get(key) ?? {
+      label: mode === "year" ? `${date.getMonth() + 1}월` : `${date.getMonth() + 1}/${date.getDate()}`,
+      count: 0,
+      failed: 0,
+      highRisk: 0,
+    };
+    existing.count += 1;
+    if (record.status === "failed") existing.failed += 1;
+    if (record.risk_level === "high" || record.risk_level === "critical") existing.highRisk += 1;
+    map.set(key, existing);
+  }
+
+  return Array.from(map.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([, value]) => value);
+}
+
+function lastDayOfMonth(month: string) {
+  const [year, rawMonth] = month.split("-").map(Number);
+  const date = new Date(year, rawMonth, 0);
+  return date.toISOString().slice(0, 10);
+}
+
+function percent(value: number, total: number) {
+  if (total <= 0) return 0;
+  return Math.round((value / total) * 100);
 }
