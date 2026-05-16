@@ -23,9 +23,9 @@ const STORE_NAME = "handles";
 const HANDLE_KEY = "recordings-directory";
 const STATE_KEY = "jamsa-auto-backup-state-v4";
 const MAX_PARALLEL_UPLOADS = 1;
-const MAX_SCAN_FILES = 400;
+const MAX_SCAN_FILES = 20_000;
 const MAX_SCAN_DIRS = 80;
-const SCAN_TIMEOUT_MS = 20_000;
+const SCAN_TIMEOUT_MS = 60_000;
 const ACCEPT = "audio/*,.mp3,.m4a,.wav,.webm,.aac,.ogg,.oga,.3gp,.amr";
 
 type BackupStatus = "unsupported" | "idle" | "ready" | "scanning" | "uploading" | "done" | "error";
@@ -65,6 +65,7 @@ export default function AutoBackupManager() {
   const [state, setState] = useState<BackupState>(EMPTY_STATE);
   const [currentFile, setCurrentFile] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [hasSavedFolder, setHasSavedFolder] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
   const runningRef = useRef(false);
@@ -76,7 +77,12 @@ export default function AutoBackupManager() {
 
   useEffect(() => {
     setState(loadState());
-  }, []);
+    if (!supported) return;
+
+    void getSavedDirectoryHandle()
+      .then((handle) => setHasSavedFolder(Boolean(handle)))
+      .catch(() => setHasSavedFolder(false));
+  }, [supported]);
 
   useEffect(() => {
     folderInputRef.current?.setAttribute("webkitdirectory", "");
@@ -99,6 +105,8 @@ export default function AutoBackupManager() {
   const activeTotal = stats.queued + stats.uploading + stats.converting + stats.uploaded + stats.failed;
   const activeDone = stats.uploaded + stats.failed;
   const percent = activeTotal > 0 ? Math.round((activeDone / activeTotal) * 100) : 0;
+  const detachedQueueCount = stats.queued + stats.uploading + stats.converting + stats.failed;
+  const needsFileReselect = detachedQueueCount > 0 && !busy && !hasSavedFolder;
 
   const patchJobs = useCallback((patch: Record<string, PersistedJob>) => {
     setState((prev) => {
@@ -181,10 +189,16 @@ export default function AutoBackupManager() {
       try {
         const handle = await withTimeout(getSavedDirectoryHandle(), 5000, "저장된 폴더 정보를 불러오지 못했습니다.");
         if (!handle) {
+          setHasSavedFolder(false);
           setStatus("idle");
-          if (!silent) setMessage("먼저 녹음 폴더 권한을 설정하거나 파일로 바로 백업해 주세요.");
+          if (!silent) {
+            setMessage(
+              "이전 대기열은 남아 있지만 브라우저가 실제 파일 접근 권한을 잃었습니다. 같은 폴더를 다시 선택하면 완료 파일은 건너뛰고 남은 파일만 이어서 백업합니다."
+            );
+          }
           return;
         }
+        setHasSavedFolder(true);
 
         const permission = await withTimeout(
           ensurePermission(handle),
@@ -192,6 +206,7 @@ export default function AutoBackupManager() {
           "폴더 권한 확인이 지연되고 있습니다. 권한을 다시 설정하거나 파일로 바로 백업해 주세요."
         );
         if (!permission) {
+          setHasSavedFolder(false);
           setStatus("idle");
           setMessage("저장된 폴더 권한이 만료되었습니다. 다시 권한을 허용해 주세요.");
           return;
@@ -203,7 +218,7 @@ export default function AutoBackupManager() {
         const entries = await withTimeout(
           collectAudioFiles(handle, "", { startedAt: Date.now(), dirs: 0, files: 0 }),
           SCAN_TIMEOUT_MS,
-          "폴더 스캔이 20초를 넘었습니다. 실제 녹음 파일이 들어있는 하위 폴더만 선택해 주세요."
+          "폴더 스캔이 60초를 넘었습니다. 실제 녹음 파일이 들어있는 하위 폴더만 선택해 주세요."
         );
 
         await processEntries(entries, "녹음 폴더");
@@ -245,6 +260,7 @@ export default function AutoBackupManager() {
       }
 
       await saveDirectoryHandle(handle);
+      setHasSavedFolder(true);
       setStatus("ready");
       setMessage("녹음 폴더 권한이 저장되었습니다. 지금부터 자동 백업을 시작합니다.");
     } catch (error) {
@@ -309,6 +325,7 @@ export default function AutoBackupManager() {
       if (supported) await deleteSavedDirectoryHandle();
       localStorage.removeItem(STATE_KEY);
       setState(EMPTY_STATE);
+      setHasSavedFolder(false);
       setCurrentFile(null);
       setStatus("idle");
       setMessage("자동 백업 설정과 작업 이력을 초기화했습니다.");
@@ -348,6 +365,12 @@ export default function AutoBackupManager() {
             <div className="text-[13px] leading-6 text-ink-soft flex-1">
               {message}
               {currentFile && <div className="mt-1 text-[11px] text-ink-mute truncate">현재 처리: {currentFile}</div>}
+              {needsFileReselect && (
+                <div className="mt-3 rounded-lg border border-gold/30 bg-gold/10 px-3 py-2 text-[12px] leading-5 text-ink-soft">
+                  대기 중인 파일 {detachedQueueCount}개가 있지만 브라우저가 예전 파일 내용을 다시 읽을 수 없습니다.
+                  아래 <b>같은 폴더 다시 선택</b>을 눌러 이전과 같은 녹음 폴더를 선택하면 완료된 파일은 유지하고 남은 파일만 계속 처리합니다.
+                </div>
+              )}
             </div>
           </div>
 
@@ -393,6 +416,16 @@ export default function AutoBackupManager() {
             <RefreshCcw size={14} />
             안 된 파일 이어서 백업
           </button>
+          {needsFileReselect && (
+            <button
+              onClick={chooseFolderFiles}
+              disabled={busy}
+              className="px-4 py-2.5 rounded-xl bg-gold/20 border border-gold text-[13px] font-bold flex items-center gap-2 disabled:opacity-50"
+            >
+              <FolderOpen size={14} />
+              같은 폴더 다시 선택
+            </button>
+          )}
           <button
             onClick={chooseFiles}
             disabled={busy}
@@ -419,7 +452,7 @@ export default function AutoBackupManager() {
         </div>
 
         <div className="text-[11px] text-ink-mute leading-5">
-          폴더 스캔은 20초가 지나면 자동 중단됩니다. 계속 멈추면 `Recordings`, `Call`, `Voice Recorder` 같은 실제 녹음 폴더만 선택하거나
+          폴더 스캔은 60초가 지나면 자동 중단됩니다. 계속 멈추면 `Recordings`, `Call`, `Voice Recorder` 같은 실제 녹음 폴더만 선택하거나
           파일로 바로 백업을 눌러 여러 녹음 파일을 선택해 주세요. 선택한 파일은 끝까지 순차 처리하고, 동시에 {MAX_PARALLEL_UPLOADS}개씩 업로드합니다.
         </div>
 
