@@ -43,7 +43,13 @@ interface UploadItem {
 // 메인 컴포넌트
 // ─────────────────────────────────────────────────────────
 
-export default function UploadDropzone() {
+export default function UploadDropzone({
+  defaultSource = "upload",
+  autoTitleFromFilename = false,
+}: {
+  defaultSource?: "upload" | "mobile_recording" | "web_recording" | "phone_backup";
+  autoTitleFromFilename?: boolean;
+}) {
   const router = useRouter();
   const [items, setItems] = useState<UploadItem[]>([]);
   const [dragOver, setDragOver] = useState(false);
@@ -105,6 +111,10 @@ export default function UploadDropzone() {
 
         const fd = new FormData();
         fd.append("file", item.file);
+        fd.append("source", defaultSource);
+        if (autoTitleFromFilename) {
+          fd.append("title", item.file.name.replace(/\.[^.]+$/, ""));
+        }
 
         try {
           const result = await uploadRecording(fd);

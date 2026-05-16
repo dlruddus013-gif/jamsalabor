@@ -1,6 +1,12 @@
 import AppSidebar from "@/components/AppSidebar";
 import Link from "next/link";
-import { LayoutDashboard, FileAudio, Upload, Smartphone, Settings } from "lucide-react";
+import {
+  Bot,
+  DatabaseBackup,
+  FileAudio,
+  LayoutDashboard,
+  Settings,
+} from "lucide-react";
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -17,16 +23,18 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 }
 
 function MobileBottomNav() {
+  const nav = [
+    { href: "/dashboard", icon: LayoutDashboard, label: "홈" },
+    { href: "/recordings", icon: FileAudio, label: "녹음" },
+    { href: "/backup", icon: DatabaseBackup, label: "백업" },
+    { href: "/assistant", icon: Bot, label: "답변" },
+    { href: "/settings", icon: Settings, label: "설정" },
+  ];
+
   return (
     <nav className="md:hidden fixed bottom-0 inset-x-0 bg-cream/95 backdrop-blur-md border-t border-line z-30">
       <div className="grid grid-cols-5 max-w-md mx-auto">
-        {[
-          { href: "/dashboard",       icon: LayoutDashboard, label: "홈" },
-          { href: "/recordings",      icon: FileAudio,       label: "녹음" },
-          { href: "/upload",          icon: Upload,          label: "업로드" },
-          { href: "/mobile-recorder", icon: Smartphone,      label: "녹음기" },
-          { href: "/settings",        icon: Settings,        label: "설정" },
-        ].map((n) => {
+        {nav.map((n) => {
           const Icon = n.icon;
           return (
             <Link
@@ -43,3 +51,4 @@ function MobileBottomNav() {
     </nav>
   );
 }
+

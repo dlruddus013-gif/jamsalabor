@@ -35,7 +35,7 @@ import {
 // 참고: Next.js 15 server action 기본 body limit 1MB → next.config.mjs 에서 110MB 로 상향.
 // ─────────────────────────────────────────────────────────
 
-const ALLOWED_SOURCES = ["upload", "mobile_recording", "web_recording"] as const;
+const ALLOWED_SOURCES = ["upload", "mobile_recording", "web_recording", "phone_backup"] as const;
 type AllowedSource = (typeof ALLOWED_SOURCES)[number];
 
 export type UploadErrorCode =
