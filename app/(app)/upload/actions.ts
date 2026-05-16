@@ -192,14 +192,12 @@ export async function registerDirectUploadedRecording(
 export async function uploadRecording(
   formData: FormData
 ): Promise<UploadResult> {
-  // ─── 1) 파일 추출 ────────────────────────────────────
   const raw = formData.get("file");
   if (!(raw instanceof File)) {
-    return { ok: false, error: "파일이 첨부되지 않았습니다.", code: "no_file" };
+    return { ok: false, error: "file is required", code: "no_file" };
   }
   const file = raw;
 
-  // 옵션
   const sourceInput = formData.get("source");
   const source: AllowedSource =
     typeof sourceInput === "string" &&
@@ -208,13 +206,12 @@ export async function uploadRecording(
       : "upload";
 
   const titleInput = formData.get("title");
-    const title =
-      typeof titleInput === "string" && titleInput.trim().length > 0
-        ? titleInput.trim().slice(0, 200)
-        : null;
+  const title =
+    typeof titleInput === "string" && titleInput.trim().length > 0
+      ? titleInput.trim().slice(0, 200)
+      : null;
   const originalPath = String(formData.get("relativePath") || formData.get("originalPath") || "");
 
-  // ─── 2) 검증 (서버 측 재검증) ─────────────────────────
   const validation = validateAudioFile({
     name: file.name,
     size: file.size,
@@ -224,53 +221,35 @@ export async function uploadRecording(
     return { ok: false, error: validation.reason, code: "invalid_file" };
   }
 
-  // ─── 3) Mock 모드 ─────────────────────────────────────
   if (!isUsingSupabaseServer()) {
     await new Promise((r) => setTimeout(r, 1000));
     return { ok: true, id: "rec_001", mock: true };
   }
 
-  // ─── 4) Supabase 모드 ─────────────────────────────────
   let uploadedPath: string | null = null;
 
   try {
-    const supabase = await createSupabaseServerClient();
+    const admin = createSupabaseAdminClient();
+    const supabase = admin;
+    const ownerId = String(formData.get("ownerId") || process.env.MOBILE_BACKUP_OWNER_ID || "").trim() || null;
 
-    // 4-1) 인증
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      return {
-        ok: false,
-        error: "로그인이 필요합니다.",
-        code: "unauthenticated",
-      };
+    if (ownerId) {
+      const { data: canStore, error: quotaError } = await supabase.rpc("can_store_recording", {
+        p_owner_id: ownerId,
+        p_bytes: file.size,
+      });
+      if (!quotaError && canStore === false) {
+        return { ok: false, error: "cloud storage quota exceeded", code: "quota_exceeded" };
+      }
     }
 
-    const { data: canStore, error: quotaError } = await supabase.rpc("can_store_recording", {
-      p_owner_id: user.id,
-      p_bytes: file.size,
-    });
-    if (!quotaError && canStore === false) {
-      return {
-        ok: false,
-        error: "클라우드 보관 용량 1TB 한도를 초과합니다. 기존 파일을 정리하거나 할당량을 늘려 주세요.",
-        code: "quota_exceeded",
-      };
-    }
-
-    // 4-2) Storage 경로 생성
-    // 형식: {user_id}/{timestamp}_{sanitized_name}
-    // RLS 가 "경로 첫 segment 가 auth.uid() 와 일치" 를 강제합니다.
     const ext = getExtension(file.name) || "bin";
     const safeBase = sanitizeFilename(file.name);
-    const path = `${user.id}/${Date.now()}_${safeBase}`;
+    const path = `phone-backups/${Date.now()}_${safeBase}`;
     const contentType = file.type || `audio/${ext}`;
+
     const duplicate = await findDuplicateRecording(supabase, {
-      ownerId: user.id,
+      ownerId,
       source,
       originalName: file.name,
       originalPath,
@@ -280,40 +259,29 @@ export async function uploadRecording(
       return { ok: true, id: duplicate.id, duplicate: true };
     }
 
-    // 4-3) Storage 업로드
     const { error: uploadError } = await supabase.storage
       .from(STORAGE_BUCKET)
-      .upload(path, file, {
-        contentType,
-        upsert: false,
-        cacheControl: "3600",
-      });
+      .upload(path, file, { contentType, upsert: false, cacheControl: "3600" });
 
     if (uploadError) {
-      return {
-        ok: false,
-        error: `Storage 업로드 실패: ${uploadError.message}`,
-        code: "storage_error",
-      };
+      return { ok: false, error: `Storage upload failed: ${uploadError.message}`, code: "storage_error" };
     }
     uploadedPath = path;
 
-    // 4-4) recordings INSERT
-    const metadata: Record<string, unknown> = {
-      original_filename: file.name,
-    };
+    const metadata: Record<string, unknown> = { original_filename: file.name };
     if (originalPath) metadata.original_path = originalPath;
     if (title) metadata.title = title;
+
     const category = inferRecordingCategory({ source, filename: file.name, path, originalPath });
     const tags = mergeRecordingTags([], category);
 
     const { data: recording, error: insertError } = await supabase
       .from("recordings")
       .insert({
-        owner_id: user.id,
+        owner_id: ownerId,
         title: title ?? file.name.replace(/\.[^.]+$/, ""),
-        recorded_at: new Date().toISOString(),
-        duration_sec: 0, // STT 워커가 채움
+        recorded_at: new Date(file.lastModified || Date.now()).toISOString(),
+        duration_sec: 0,
         audio_path: path,
         audio_mime: contentType,
         audio_size_bytes: file.size,
@@ -328,15 +296,9 @@ export async function uploadRecording(
 
     if (insertError || !recording) {
       await rollbackStorage(uploadedPath);
-      return {
-        ok: false,
-        error: `메타데이터 저장 실패: ${insertError?.message ?? "unknown"}`,
-        code: "db_error",
-      };
+      return { ok: false, error: `recording insert failed: ${insertError?.message ?? "unknown"}`, code: "db_error" };
     }
 
-    // 4-5) stt_jobs INSERT (admin)
-    const admin = createSupabaseAdminClient();
     const { error: jobError } = await admin.from("stt_jobs").insert({
       recording_id: recording.id,
       status: "queued",
@@ -344,44 +306,27 @@ export async function uploadRecording(
       language: "ko",
       priority: 100,
     });
-    if (jobError) {
-      console.error("[upload] stt_jobs insert failed:", jobError);
-    }
+    if (jobError) console.error("[upload] stt_jobs insert failed:", jobError);
 
-    // 4-6) audit_logs INSERT (admin)
     const { error: auditError } = await admin.from("audit_logs").insert({
-      user_id: user.id,
+      user_id: ownerId,
       action: "create",
       resource_type: "recording",
       resource_id: recording.id,
-      metadata: {
-        original_filename: file.name,
-        size_bytes: file.size,
-        mime: contentType,
-        path,
-        source,
-        ...(title ? { title } : {}),
-      },
+      metadata: { original_filename: file.name, size_bytes: file.size, mime: contentType, path, source, ...(title ? { title } : {}) },
     });
-    if (auditError) {
-      console.error("[upload] audit_logs insert failed:", auditError);
-    }
+    if (auditError) console.error("[upload] audit_logs insert failed:", auditError);
 
-    // 4-7) 캐시 무효화
     revalidatePath("/recordings");
     revalidatePath("/dashboard");
 
     return { ok: true, id: recording.id };
   } catch (e) {
     if (uploadedPath) await rollbackStorage(uploadedPath);
-    const msg = e instanceof Error ? e.message : "알 수 없는 오류";
-    return { ok: false, error: `예기치 못한 오류: ${msg}`, code: "unknown" };
+    const msg = e instanceof Error ? e.message : "unknown error";
+    return { ok: false, error: `unexpected error: ${msg}`, code: "unknown" };
   }
 }
-
-// ─────────────────────────────────────────────────────────
-// 내부 헬퍼
-// ─────────────────────────────────────────────────────────
 
 async function rollbackStorage(path: string): Promise<void> {
   try {
@@ -395,7 +340,7 @@ async function rollbackStorage(path: string): Promise<void> {
 async function findDuplicateRecording(
   supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
   input: {
-    ownerId: string;
+    ownerId: string | null;
     source: AllowedSource;
     originalName: string;
     originalPath: string;
@@ -407,13 +352,16 @@ async function findDuplicateRecording(
   };
   if (input.originalPath) metadataFilter.original_path = input.originalPath;
 
-  const { data, error } = await supabase
+  let query = supabase
     .from("recordings")
     .select("id")
-    .eq("owner_id", input.ownerId)
     .eq("source", input.source)
     .eq("audio_size_bytes", input.size)
-    .contains("metadata", metadataFilter)
+    .contains("metadata", metadataFilter);
+
+  query = input.ownerId ? query.eq("owner_id", input.ownerId) : query.is("owner_id", null);
+
+  const { data, error } = await query
     .order("created_at", { ascending: true })
     .limit(1)
     .maybeSingle();

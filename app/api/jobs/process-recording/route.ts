@@ -1,9 +1,5 @@
 import { NextResponse } from "next/server";
-import {
-  createSupabaseAdminClient,
-  createSupabaseServerClient,
-  isUsingSupabaseServer,
-} from "@/lib/supabase/server";
+import { createSupabaseAdminClient, isUsingSupabaseServer } from "@/lib/supabase/server";
 import { processRecordingNow } from "@/lib/recording-processor";
 
 export const runtime = "nodejs";
@@ -68,21 +64,12 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "recordingId is required." }, { status: 400 });
   }
 
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser();
-  if (authError || !user) {
-    return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
-  }
-
-  const { data: recording, error } = await supabase
+  const admin = createSupabaseAdminClient();
+  const { data: recording, error } = await admin
     .from("recordings")
     .select("id")
     .eq("id", recordingId)
-    .eq("owner_id", user.id)
-    .single();
+    .maybeSingle();
   if (error || !recording) {
     return NextResponse.json({ error: "recording not found" }, { status: 404 });
   }
@@ -92,7 +79,6 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: true, processed: true, result });
   } catch (error) {
     const message = error instanceof Error ? error.message : "processing failed";
-    const admin = createSupabaseAdminClient();
     await admin
       .from("stt_jobs")
       .update({

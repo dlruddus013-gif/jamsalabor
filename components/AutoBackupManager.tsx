@@ -593,9 +593,7 @@ async function uploadEntries(
     formData.append("relativePath", entry.relativePath);
 
     try {
-      const result = isUsingSupabase()
-        ? await withTimeout(uploadLargeFileDirectly(entry, formData), UPLOAD_TIMEOUT_MS, "업로드 시간이 초과되어 다음 파일로 넘어갑니다.")
-        : await withTimeout(uploadSmallFileThroughServer(entry, formData), UPLOAD_TIMEOUT_MS, "업로드 시간이 초과되어 다음 파일로 넘어갑니다.");
+      const result = await withTimeout(uploadSmallFileThroughServer(entry, formData), UPLOAD_TIMEOUT_MS, "업로드 시간이 초과되어 다음 파일로 넘어갑니다.");
       if (!result.ok) {
         patchJobs({ [entry.fingerprint]: makeJob(entry, "failed", result.error) });
         return;

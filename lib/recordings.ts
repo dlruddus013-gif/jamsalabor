@@ -1,6 +1,7 @@
 import "server-only";
 
 import {
+  createSupabaseAdminClient,
   createSupabaseServerClient,
   isUsingSupabaseServer,
 } from "@/lib/supabase/server";
@@ -116,7 +117,7 @@ async function loadFromSupabase(
   id: string,
   options: FetchOptions = {}
 ): Promise<RecordingDetail | null> {
-  const supabase = await createSupabaseServerClient();
+  const supabase = createSupabaseAdminClient();
   const useAdmin = !!options.admin;
 
   // ── 1) recording ──────────────────────────────────────

@@ -1,6 +1,7 @@
 import "server-only";
 
 import {
+  createSupabaseAdminClient,
   createSupabaseServerClient,
   isUsingSupabaseServer,
 } from "@/lib/supabase/server";
@@ -66,7 +67,7 @@ export async function searchRecordings(
 // ─────────────────────────────────────────────────────────
 
 async function searchSupabase(p: SearchParams): Promise<SearchResult> {
-  const supabase = await createSupabaseServerClient();
+  const supabase = createSupabaseAdminClient();
 
   // RPC 는 TypeScript 자동생성 타입에 들어있지 않으므로 any 캐스트
   const { data, error } = await (supabase as unknown as {
@@ -212,7 +213,7 @@ export async function fetchFilterOptions(): Promise<{
     return { categories: Array.from(cats).sort() };
   }
 
-  const supabase = await createSupabaseServerClient();
+  const supabase = createSupabaseAdminClient();
   const { data, error } = await supabase
     .from("recordings")
     .select("category")
