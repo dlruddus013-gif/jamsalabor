@@ -104,6 +104,11 @@ export default function AutoBackupManager() {
       failed: jobs.filter((job) => job.status === "failed").length,
     };
   }, [state]);
+  const failureGroups = useMemo(() => analyzeFailures(Object.values(state.jobs)), [state]);
+  const retryableFailed = useMemo(
+    () => Object.values(state.jobs).filter((job) => job.status === "failed" && isRetryableFailure(job.message)).length,
+    [state]
+  );
 
   const activeTotal = stats.queued + stats.uploading + stats.converting + stats.uploaded + stats.failed;
   const activeDone = stats.uploaded + stats.failed;
@@ -357,6 +362,26 @@ export default function AutoBackupManager() {
     }
   };
 
+  const requeueRetryableFailures = () => {
+    const now = Date.now();
+    const patch: Record<string, PersistedJob> = {};
+    for (const job of Object.values(loadState().jobs)) {
+      if (job.status !== "failed" || !isRetryableFailure(job.message)) continue;
+      patch[job.fingerprint] = {
+        ...job,
+        status: "queued",
+        message: "원인 수정 후 다시 대기",
+        updatedAt: now,
+      };
+    }
+    if (Object.keys(patch).length === 0) {
+      setMessage("재시도 가능한 실패 파일이 없습니다.");
+      return;
+    }
+    patchJobs(patch);
+    setMessage(`${Object.keys(patch).length}개 실패 파일을 다시 대기열로 돌렸습니다. 같은 폴더 파일로 업로드를 눌러 이어서 처리하세요.`);
+  };
+
   const recentJobs = Object.values(state.jobs)
     .sort((a, b) => b.updatedAt - a.updatedAt)
     .slice(0, 18);
@@ -420,6 +445,34 @@ export default function AutoBackupManager() {
             <Stat label="실패" value={stats.failed} />
             <Stat label="건너뜀" value={stats.skipped} />
           </div>
+
+          {failureGroups.length > 0 && (
+            <div className="mt-4 rounded-xl bg-paper border border-line-soft overflow-hidden">
+              <div className="px-3 py-2 border-b border-line-soft flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-[12px] font-bold">실패 원인 측정</div>
+                  <div className="text-[10px] text-ink-mute">
+                    실패 {stats.failed}건을 메시지 기준으로 자동 분류했습니다.
+                  </div>
+                </div>
+                {retryableFailed > 0 && (
+                  <button
+                    type="button"
+                    onClick={requeueRetryableFailures}
+                    disabled={busy}
+                    className="px-3 py-1.5 rounded-lg bg-accent/10 text-accent text-[11px] font-bold disabled:opacity-50"
+                  >
+                    재시도 대기 {retryableFailed}건
+                  </button>
+                )}
+              </div>
+              <div className="divide-y divide-line-soft">
+                {failureGroups.map((group) => (
+                  <FailureCauseRow key={group.key} group={group} total={stats.failed} />
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="flex flex-wrap gap-2">
@@ -503,6 +556,40 @@ function Stat({ label, value }: { label: string; value: number }) {
   );
 }
 
+interface FailureGroup {
+  key: string;
+  label: string;
+  count: number;
+  sample: string;
+  fix: string;
+  retryable: boolean;
+}
+
+function FailureCauseRow({ group, total }: { group: FailureGroup; total: number }) {
+  const percent = total > 0 ? Math.round((group.count / total) * 100) : 0;
+  return (
+    <div className="px-3 py-2.5">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-[12px] font-semibold">{group.label}</div>
+          <div className="text-[10px] text-ink-mute truncate">{group.sample}</div>
+        </div>
+        <div className="text-right shrink-0">
+          <div className="text-[13px] font-bold num">{group.count}건</div>
+          <div className="text-[10px] text-ink-mute">{percent}%</div>
+        </div>
+      </div>
+      <div className="mt-2 h-1.5 rounded-full bg-line-soft overflow-hidden">
+        <div className="h-full bg-accent/70" style={{ width: `${percent}%` }} />
+      </div>
+      <div className="mt-1.5 text-[10px] text-ink-soft">
+        조치: {group.fix}
+        {group.retryable && <span className="text-accent font-semibold"> · 재시도 가능</span>}
+      </div>
+    </div>
+  );
+}
+
 function JobRow({ job }: { job: PersistedJob }) {
   const icon =
     job.status === "uploaded" ? (
@@ -540,6 +627,98 @@ function statusLabel(status: JobStatus) {
     failed: "실패",
   };
   return map[status];
+}
+
+function analyzeFailures(jobs: PersistedJob[]): FailureGroup[] {
+  const groups = new Map<string, FailureGroup>();
+
+  for (const job of jobs) {
+    if (job.status !== "failed") continue;
+    const meta = classifyFailure(job.message);
+    const existing = groups.get(meta.key);
+    if (existing) {
+      existing.count += 1;
+    } else {
+      groups.set(meta.key, {
+        ...meta,
+        count: 1,
+        sample: job.message || "메시지 없음",
+      });
+    }
+  }
+
+  return Array.from(groups.values())
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 8);
+}
+
+function classifyFailure(message: string): Omit<FailureGroup, "count" | "sample"> {
+  const lower = message.toLowerCase();
+
+  if (message.includes("로그인") || lower.includes("unauthenticated")) {
+    return {
+      key: "auth",
+      label: "이전 버전 로그인 요구",
+      fix: "최신 배포에서는 로그인 없이 서버 업로드로 처리됩니다. 재시도 대기 후 같은 폴더 파일로 업로드하세요.",
+      retryable: true,
+    };
+  }
+
+  if (lower.includes("stt_jobs") || lower.includes("schema cache") || lower.includes("could not find the table")) {
+    return {
+      key: "missing-stt-jobs",
+      label: "Supabase STT 큐 테이블 없음",
+      fix: "Supabase SQL Editor에서 전체 마이그레이션 SQL을 실행해야 자동 STT가 시작됩니다.",
+      retryable: true,
+    };
+  }
+
+  if (lower.includes("storage") || lower.includes("bucket") || lower.includes("upload failed")) {
+    return {
+      key: "storage",
+      label: "Storage 업로드 오류",
+      fix: "recordings 버킷, 용량, 파일 제한을 확인한 뒤 다시 업로드하세요.",
+      retryable: true,
+    };
+  }
+
+  if (message.includes("시간") || lower.includes("timeout")) {
+    return {
+      key: "timeout",
+      label: "업로드 시간초과",
+      fix: "네트워크가 안정적인 상태에서 같은 폴더 파일로 업로드를 다시 실행하세요.",
+      retryable: true,
+    };
+  }
+
+  if (message.includes("지원") || message.includes("파일") || lower.includes("invalid")) {
+    return {
+      key: "invalid-file",
+      label: "지원하지 않는 파일",
+      fix: "MP3, M4A, WAV, WEBM, AAC, OGG, 3GP, AMR 파일만 업로드하세요.",
+      retryable: false,
+    };
+  }
+
+  if (lower.includes("quota") || message.includes("용량")) {
+    return {
+      key: "quota",
+      label: "저장 용량 제한",
+      fix: "Supabase Storage 용량 또는 프로젝트 디스크 한도를 늘린 뒤 재시도하세요.",
+      retryable: true,
+    };
+  }
+
+  return {
+    key: "unknown",
+    label: "기타 오류",
+    fix: "상세 메시지를 확인한 뒤 같은 폴더 파일로 업로드를 다시 실행하세요.",
+    retryable: true,
+  };
+}
+
+function isRetryableFailure(message: string) {
+  return classifyFailure(message).retryable;
 }
 
 function StatusBadge({ status, busy }: { status: BackupStatus; busy: boolean }) {
