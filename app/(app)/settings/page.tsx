@@ -3,6 +3,7 @@
 import { Mic, FileAudio, Sparkles, Shield, Database, Bell, User } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/cn";
+import IntegrationStatusPanel from "@/components/IntegrationStatusPanel";
 
 export default function SettingsPage() {
   return (
@@ -67,6 +68,8 @@ export default function SettingsPage() {
         <Toggle label="일일 리포트" desc="매일 오후 6시 운영 요약" defaultOn />
         <Toggle label="실패 알림" desc="STT/요약 실패 시 즉시 알림" defaultOn />
       </Section>
+
+      <IntegrationStatusPanel />
 
       <div className="flex gap-2 pt-2">
         <button className="flex-1 py-3 rounded-xl bg-ink text-cream font-bold text-[13px]">
