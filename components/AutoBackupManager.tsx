@@ -1,7 +1,17 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
-import { CheckCircle2, FolderOpen, Loader2, RefreshCcw, ShieldCheck, Smartphone, XCircle, Clock3, UploadCloud } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  CheckCircle2,
+  Clock3,
+  FolderOpen,
+  Loader2,
+  RefreshCcw,
+  ShieldCheck,
+  Smartphone,
+  UploadCloud,
+  XCircle,
+} from "lucide-react";
 import { uploadRecording } from "@/app/(app)/upload/actions";
 import { ACCEPTED_EXTENSIONS, formatBytes, validateAudioFile } from "@/lib/upload";
 import { cn } from "@/lib/cn";
@@ -9,9 +19,12 @@ import { cn } from "@/lib/cn";
 const DB_NAME = "jamsa-auto-backup";
 const STORE_NAME = "handles";
 const HANDLE_KEY = "recordings-directory";
-const STATE_KEY = "jamsa-auto-backup-state-v2";
+const STATE_KEY = "jamsa-auto-backup-state-v3";
 const MAX_AUTO_UPLOAD_PER_RUN = 12;
 const MAX_PARALLEL_UPLOADS = 3;
+const MAX_SCAN_FILES = 400;
+const MAX_SCAN_DIRS = 80;
+const SCAN_TIMEOUT_MS = 20_000;
 
 type BackupStatus = "unsupported" | "idle" | "ready" | "scanning" | "uploading" | "done" | "error";
 type JobStatus = "queued" | "uploading" | "uploaded" | "skipped" | "failed";
@@ -36,14 +49,20 @@ interface AudioEntry {
   fingerprint: string;
 }
 
+interface ScanContext {
+  startedAt: number;
+  dirs: number;
+  files: number;
+}
+
 const EMPTY_STATE: BackupState = { jobs: {} };
 
 export default function AutoBackupManager() {
   const [status, setStatus] = useState<BackupStatus>("idle");
-  const [message, setMessage] = useState("녹음 폴더를 한 번 지정하면 다음 접속부터 실패한 파일과 새 파일만 이어서 백업합니다.");
+  const [message, setMessage] = useState("녹음 폴더를 한 번 지정하면 다음 접속부터 새 파일과 실패 파일만 이어서 백업합니다.");
   const [state, setState] = useState<BackupState>(EMPTY_STATE);
   const [currentFile, setCurrentFile] = useState<string | null>(null);
-  const [isPending, startTransition] = useTransition();
+  const [busy, setBusy] = useState(false);
   const runningRef = useRef(false);
 
   const supported = useMemo(
@@ -80,7 +99,7 @@ export default function AutoBackupManager() {
   }, []);
 
   const scanSavedFolder = useCallback(
-    (silent = false) => {
+    async (silent = false) => {
       if (!supported) {
         setStatus("unsupported");
         setMessage("이 브라우저는 폴더 자동 접근을 지원하지 않습니다. Chrome/Edge 최신 버전 또는 Android 동반 앱이 필요합니다.");
@@ -88,122 +107,145 @@ export default function AutoBackupManager() {
       }
       if (runningRef.current) return;
 
-      startTransition(async () => {
-        runningRef.current = true;
-        setCurrentFile(null);
-        try {
-          const handle = await getSavedDirectoryHandle();
-          if (!handle) {
-            setStatus("idle");
-            if (!silent) setMessage("먼저 녹음 폴더 권한을 설정하세요.");
-            return;
-          }
+      runningRef.current = true;
+      setBusy(true);
+      setCurrentFile(null);
 
-          const permission = await ensurePermission(handle);
-          if (!permission) {
-            setStatus("idle");
-            setMessage("저장된 폴더 권한이 만료되었습니다. 다시 권한을 허용해 주세요.");
-            return;
-          }
-
-          setStatus("scanning");
-          setMessage("녹음 폴더를 스캔하고, 기존 완료 파일은 보존한 채 새 파일과 실패 파일만 선별합니다.");
-          const entries = await collectAudioFiles(handle);
-          const latestState = loadState();
-          const discovered: Record<string, PersistedJob> = {};
-
-          for (const entry of entries) {
-            const previous = latestState.jobs[entry.fingerprint];
-            if (previous?.status === "uploaded" || previous?.status === "skipped") continue;
-            discovered[entry.fingerprint] = {
-              fingerprint: entry.fingerprint,
-              name: entry.relativePath,
-              size: entry.file.size,
-              modified: entry.file.lastModified,
-              status: previous?.status === "failed" ? "queued" : previous?.status ?? "queued",
-              message: previous?.status === "failed" ? "이전 실패 파일 재시도 대기" : previous?.message ?? "업로드 대기",
-              updatedAt: Date.now(),
-            };
-          }
-
-          if (Object.keys(discovered).length > 0) patchJobs(discovered);
-
-          const runnable = entries
-            .filter((entry) => {
-              const job = { ...latestState.jobs, ...discovered }[entry.fingerprint];
-              return job && (job.status === "queued" || job.status === "failed" || job.status === "uploading");
-            })
-            .slice(0, MAX_AUTO_UPLOAD_PER_RUN);
-
-          if (runnable.length === 0) {
-            setStatus("done");
-            setMessage("백업할 새 파일이나 실패 파일이 없습니다. 기존 백업 상태는 그대로 보관됩니다.");
-            return;
-          }
-
-          setStatus("uploading");
-          setMessage(`${runnable.length}개 파일을 이어서 백업합니다. 완료된 파일은 다시 올리지 않습니다.`);
-          await uploadEntries(runnable, patchJobs, setCurrentFile);
-
-          const remaining = countRemaining();
-          setStatus("done");
-          setCurrentFile(null);
-          setMessage(
-            remaining > 0
-              ? `이번 묶음 처리가 끝났습니다. 남은 파일 ${remaining}개는 다음 접속 또는 지금 백업 실행 때 이어서 처리합니다.`
-              : "자동 백업이 완료되었습니다. 완료 파일은 보관되고 다음부터 새 파일만 처리합니다."
-          );
-        } catch (error) {
-          setStatus("error");
-          setMessage(error instanceof Error ? error.message : "자동 백업 중 오류가 발생했습니다.");
-        } finally {
-          runningRef.current = false;
+      try {
+        const handle = await withTimeout(getSavedDirectoryHandle(), 5000, "저장된 폴더 정보를 불러오지 못했습니다.");
+        if (!handle) {
+          setStatus("idle");
+          if (!silent) setMessage("먼저 녹음 폴더 권한을 설정하세요.");
+          return;
         }
-      });
+
+        const permission = await withTimeout(ensurePermission(handle), 8000, "폴더 권한 확인이 지연되었습니다. 권한을 다시 설정해 주세요.");
+        if (!permission) {
+          setStatus("idle");
+          setMessage("저장된 폴더 권한이 만료되었습니다. 다시 권한을 허용해 주세요.");
+          return;
+        }
+
+        setStatus("scanning");
+        setMessage("녹음 폴더를 스캔하고 있습니다. 너무 큰 상위 폴더를 선택했다면 녹음 폴더만 다시 지정해 주세요.");
+
+        const entries = await withTimeout(
+          collectAudioFiles(handle, "", { startedAt: Date.now(), dirs: 0, files: 0 }),
+          SCAN_TIMEOUT_MS,
+          "폴더 스캔이 20초를 넘었습니다. 녹음 파일이 들어있는 하위 폴더만 선택해 주세요."
+        );
+
+        const latestState = loadState();
+        const discovered: Record<string, PersistedJob> = {};
+
+        for (const entry of entries) {
+          const previous = latestState.jobs[entry.fingerprint];
+          if (previous?.status === "uploaded" || previous?.status === "skipped") continue;
+          discovered[entry.fingerprint] = {
+            fingerprint: entry.fingerprint,
+            name: entry.relativePath,
+            size: entry.file.size,
+            modified: entry.file.lastModified,
+            status: previous?.status === "failed" || previous?.status === "uploading" ? "queued" : previous?.status ?? "queued",
+            message: previous?.status === "failed" || previous?.status === "uploading" ? "이전 중단/실패 파일 재시도 대기" : previous?.message ?? "업로드 대기",
+            updatedAt: Date.now(),
+          };
+        }
+
+        if (Object.keys(discovered).length > 0) patchJobs(discovered);
+
+        const allJobs = { ...latestState.jobs, ...discovered };
+        const runnable = entries
+          .filter((entry) => {
+            const job = allJobs[entry.fingerprint];
+            return job && (job.status === "queued" || job.status === "failed" || job.status === "uploading");
+          })
+          .slice(0, MAX_AUTO_UPLOAD_PER_RUN);
+
+        if (entries.length === 0) {
+          setStatus("done");
+          setMessage("선택한 폴더에서 지원되는 오디오 파일을 찾지 못했습니다. 실제 녹음 파일이 들어있는 폴더를 다시 선택해 주세요.");
+          return;
+        }
+
+        if (runnable.length === 0) {
+          setStatus("done");
+          setMessage(`스캔 완료: ${entries.length}개 파일 확인. 새로 백업할 파일이나 실패 파일이 없습니다.`);
+          return;
+        }
+
+        setStatus("uploading");
+        setMessage(`${runnable.length}개 파일을 이어서 백업합니다. 완료된 파일은 다시 올리지 않습니다.`);
+        await uploadEntries(runnable, patchJobs, setCurrentFile);
+
+        const remaining = countRemaining();
+        setStatus("done");
+        setCurrentFile(null);
+        setMessage(
+          remaining > 0
+            ? `이번 묶음 처리가 끝났습니다. 남은 파일 ${remaining}개는 다음 접속 또는 이어서 백업 버튼으로 처리합니다.`
+            : "자동 백업이 완료되었습니다. 완료 파일은 보관되고 다음부터 새 파일만 처리합니다."
+        );
+      } catch (error) {
+        setStatus("error");
+        setCurrentFile(null);
+        setMessage(error instanceof Error ? error.message : "자동 백업 중 오류가 발생했습니다.");
+      } finally {
+        runningRef.current = false;
+        setBusy(false);
+      }
     },
     [patchJobs, supported]
   );
 
   useEffect(() => {
-    const timer = window.setTimeout(() => scanSavedFolder(true), 400);
+    const timer = window.setTimeout(() => {
+      void scanSavedFolder(true);
+    }, 400);
     return () => window.clearTimeout(timer);
   }, [scanSavedFolder]);
 
-  const chooseFolder = () => {
-    startTransition(async () => {
-      try {
-        if (!supported) {
-          setStatus("unsupported");
-          return;
-        }
-        const picker = (window as any).showDirectoryPicker as (options?: unknown) => Promise<any>;
-        const handle = await picker({ id: "jamsa-recordings", mode: "read", startIn: "music" });
-        const permission = await ensurePermission(handle);
-        if (!permission) {
-          setStatus("idle");
-          setMessage("폴더 읽기 권한이 필요합니다.");
-          return;
-        }
-        await saveDirectoryHandle(handle);
-        setStatus("ready");
-        setMessage("녹음 폴더 권한이 저장되었습니다. 다음부터 앱 접속 시 자동 백업이 이어집니다.");
-        scanSavedFolder(false);
-      } catch (error) {
-        setStatus("error");
-        setMessage(error instanceof Error ? error.message : "폴더 선택이 취소되었습니다.");
+  const chooseFolder = async () => {
+    if (!supported || busy) return;
+    setBusy(true);
+    try {
+      const picker = (window as any).showDirectoryPicker as (options?: unknown) => Promise<any>;
+      const handle = await withTimeout(
+        picker({ id: "jamsa-recordings", mode: "read", startIn: "music" }),
+        30_000,
+        "폴더 선택 시간이 초과되었습니다."
+      );
+      const permission = await ensurePermission(handle);
+      if (!permission) {
+        setStatus("idle");
+        setMessage("폴더 읽기 권한이 필요합니다.");
+        return;
       }
-    });
+      await saveDirectoryHandle(handle);
+      setStatus("ready");
+      setMessage("녹음 폴더 권한이 저장되었습니다. 지금부터 자동 백업을 시작합니다.");
+      await scanSavedFolder(false);
+    } catch (error) {
+      setStatus("error");
+      setMessage(error instanceof Error ? error.message : "폴더 선택이 취소되었습니다.");
+    } finally {
+      setBusy(false);
+    }
   };
 
-  const clearSetup = () => {
-    startTransition(async () => {
+  const clearSetup = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
       await deleteSavedDirectoryHandle();
       localStorage.removeItem(STATE_KEY);
       setState(EMPTY_STATE);
       setCurrentFile(null);
       setStatus("idle");
       setMessage("자동 백업 설정과 작업 이력을 초기화했습니다.");
-    });
+    } finally {
+      setBusy(false);
+    }
   };
 
   const recentJobs = Object.values(state.jobs)
@@ -224,7 +266,7 @@ export default function AutoBackupManager() {
             </p>
           </div>
         </div>
-        <StatusBadge status={status} busy={isPending || runningRef.current} />
+        <StatusBadge status={status} busy={busy} />
       </div>
 
       <div className="p-5 space-y-4">
@@ -263,15 +305,15 @@ export default function AutoBackupManager() {
         <div className="flex flex-wrap gap-2">
           <button
             onClick={chooseFolder}
-            disabled={isPending || !supported}
+            disabled={busy || !supported}
             className="px-4 py-2.5 rounded-xl bg-ink text-cream text-[13px] font-bold flex items-center gap-2 disabled:opacity-50"
           >
-            {isPending ? <Loader2 size={14} className="animate-spin" /> : <FolderOpen size={14} />}
+            {busy ? <Loader2 size={14} className="animate-spin" /> : <FolderOpen size={14} />}
             녹음 폴더 권한 설정
           </button>
           <button
-            onClick={() => scanSavedFolder(false)}
-            disabled={isPending || !supported}
+            onClick={() => void scanSavedFolder(false)}
+            disabled={busy || !supported}
             className="px-4 py-2.5 rounded-xl bg-paper border border-line text-[13px] font-semibold flex items-center gap-2 disabled:opacity-50"
           >
             <RefreshCcw size={14} />
@@ -279,7 +321,7 @@ export default function AutoBackupManager() {
           </button>
           <button
             onClick={clearSetup}
-            disabled={isPending}
+            disabled={busy}
             className="px-4 py-2.5 rounded-xl bg-paper border border-line text-[13px] text-ink-mute disabled:opacity-50"
           >
             설정 초기화
@@ -287,7 +329,7 @@ export default function AutoBackupManager() {
         </div>
 
         <div className="text-[11px] text-ink-mute leading-5">
-          처리 중 종료되어도 완료 파일은 보존됩니다. 상태가 `queued`, `uploading`, `failed`인 파일만 다음 실행 때 다시 시도합니다.
+          스캔이 20초를 넘으면 자동 중단합니다. 계속 멈추면 휴대폰 전체 저장소가 아니라 `Recordings`, `Call`, `Voice Recorder` 같은 실제 녹음 폴더만 선택해 주세요.
           한 번에 최대 {MAX_AUTO_UPLOAD_PER_RUN}개, 동시 {MAX_PARALLEL_UPLOADS}개씩 업로드합니다.
         </div>
 
@@ -389,9 +431,7 @@ async function uploadEntries(
 ) {
   await runPool(entries, MAX_PARALLEL_UPLOADS, async (entry) => {
     setCurrentFile(entry.relativePath);
-    patchJobs({
-      [entry.fingerprint]: makeJob(entry, "uploading", "서버로 업로드 중"),
-    });
+    patchJobs({ [entry.fingerprint]: makeJob(entry, "uploading", "서버로 업로드 중") });
 
     const validation = validateAudioFile({ name: entry.file.name, size: entry.file.size, type: entry.file.type });
     if (!validation.valid) {
@@ -406,11 +446,11 @@ async function uploadEntries(
 
     try {
       const result = await uploadRecording(formData);
-      if (result.ok) {
-        patchJobs({ [entry.fingerprint]: makeJob(entry, "uploaded", "백업 완료 · STT 대기열 등록") });
-      } else {
-        patchJobs({ [entry.fingerprint]: makeJob(entry, "failed", result.error) });
-      }
+      patchJobs({
+        [entry.fingerprint]: result.ok
+          ? makeJob(entry, "uploaded", "백업 완료 · STT 대기열 등록")
+          : makeJob(entry, "failed", result.error),
+      });
     } catch (error) {
       patchJobs({
         [entry.fingerprint]: makeJob(entry, "failed", error instanceof Error ? error.message : "업로드 실패"),
@@ -436,24 +476,53 @@ function countRemaining() {
   return jobs.filter((job) => job.status === "queued" || job.status === "uploading" || job.status === "failed").length;
 }
 
-async function collectAudioFiles(handle: any, prefix = ""): Promise<AudioEntry[]> {
+async function collectAudioFiles(handle: any, prefix: string, ctx: ScanContext): Promise<AudioEntry[]> {
+  if (Date.now() - ctx.startedAt > SCAN_TIMEOUT_MS) {
+    throw new Error("폴더 스캔 시간이 초과되었습니다. 녹음 파일이 들어있는 하위 폴더만 선택해 주세요.");
+  }
+  if (ctx.dirs > MAX_SCAN_DIRS || ctx.files > MAX_SCAN_FILES) {
+    return [];
+  }
+
   const files: AudioEntry[] = [];
+  ctx.dirs += 1;
+
   for await (const [name, child] of handle.entries()) {
     const path = prefix ? `${prefix}/${name}` : name;
     if (child.kind === "directory") {
-      files.push(...(await collectAudioFiles(child, path)));
+      if (!shouldScanDirectory(name)) continue;
+      files.push(...(await collectAudioFiles(child, path, ctx)));
       continue;
     }
+
     const ext = name.toLowerCase().split(".").pop() ?? "";
     if (!ACCEPTED_EXTENSIONS.includes(ext as any)) continue;
     const file = await child.getFile();
+    ctx.files += 1;
     files.push({
       file,
       relativePath: path,
       fingerprint: `${path}|${file.name}|${file.size}|${file.lastModified}`,
     });
+    if (ctx.files >= MAX_SCAN_FILES) break;
   }
+
   return files.sort((a, b) => b.file.lastModified - a.file.lastModified);
+}
+
+function shouldScanDirectory(name: string) {
+  const lower = name.toLowerCase();
+  return [
+    "record",
+    "recording",
+    "voice",
+    "call",
+    "audio",
+    "sound",
+    "music",
+    "녹음",
+    "통화",
+  ].some((token) => lower.includes(token));
 }
 
 async function runPool<T>(items: T[], concurrency: number, worker: (item: T) => Promise<void>) {
@@ -472,6 +541,22 @@ async function ensurePermission(handle: any) {
   const options = { mode: "read" };
   if ((await handle.queryPermission(options)) === "granted") return true;
   return (await handle.requestPermission(options)) === "granted";
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      (value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        window.clearTimeout(timer);
+        reject(error);
+      }
+    );
+  });
 }
 
 function loadState(): BackupState {
