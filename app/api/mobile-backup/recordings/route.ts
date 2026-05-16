@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createSupabaseAdminClient, isUsingSupabaseServer } from "@/lib/supabase/server";
 import { getExtension, sanitizeFilename, STORAGE_BUCKET, validateAudioFile } from "@/lib/upload";
 import { processRecordingNow } from "@/lib/recording-processor";
+import { inferRecordingCategory, mergeRecordingTags } from "@/lib/recording-category";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -55,6 +56,13 @@ export async function POST(req: Request) {
   const safeName = sanitizeFilename(raw.name, 90);
   const storagePath = `mobile-backups/${deviceId}/${Date.now()}_${safeName}`;
   const contentType = raw.type || `audio/${ext}`;
+  const category = inferRecordingCategory({
+    source: "phone_backup",
+    filename: raw.name,
+    path: storagePath,
+    originalPath,
+  });
+  const tags = mergeRecordingTags([], category);
 
   if (ownerId) {
     const { data: canStore, error: quotaError } = await admin.rpc("can_store_recording", {
@@ -88,6 +96,8 @@ export async function POST(req: Request) {
       audio_sha256: sha256,
       status: "processing",
       source: "phone_backup",
+      category,
+      tags,
       title,
       metadata: {
         device_id: deviceId,

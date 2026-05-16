@@ -12,6 +12,7 @@ import {
   sanitizeFilename,
   validateAudioFile,
 } from "@/lib/upload";
+import { inferRecordingCategory, mergeRecordingTags } from "@/lib/recording-category";
 
 // ─────────────────────────────────────────────────────────
 // Upload Server Action
@@ -81,6 +82,9 @@ export async function registerDirectUploadedRecording(
         : "upload";
     const titleInput = formData.get("title");
     const title = typeof titleInput === "string" && titleInput.trim().length > 0 ? titleInput.trim().slice(0, 200) : null;
+    const originalPath = String(formData.get("relativePath") || formData.get("originalPath") || "");
+    const category = inferRecordingCategory({ source, filename: originalName, path, originalPath });
+    const tags = mergeRecordingTags([], category);
 
     if (!path || !path.startsWith(`${user.id}/`)) {
       return { ok: false, error: "Storage 경로가 올바르지 않습니다.", code: "storage_error" };
@@ -107,6 +111,7 @@ export async function registerDirectUploadedRecording(
     }
 
     const metadata: Record<string, unknown> = { original_filename: originalName, direct_storage_upload: true };
+    if (originalPath) metadata.original_path = originalPath;
     if (title) metadata.title = title;
 
     const { data: recording, error: insertError } = await supabase
@@ -120,6 +125,8 @@ export async function registerDirectUploadedRecording(
         audio_size_bytes: size,
         status: "processing",
         source,
+        category,
+        tags,
         metadata,
       })
       .select("id")
@@ -188,10 +195,11 @@ export async function uploadRecording(
       : "upload";
 
   const titleInput = formData.get("title");
-  const title =
-    typeof titleInput === "string" && titleInput.trim().length > 0
-      ? titleInput.trim().slice(0, 200)
-      : null;
+    const title =
+      typeof titleInput === "string" && titleInput.trim().length > 0
+        ? titleInput.trim().slice(0, 200)
+        : null;
+  const originalPath = String(formData.get("relativePath") || formData.get("originalPath") || "");
 
   // ─── 2) 검증 (서버 측 재검증) ─────────────────────────
   const validation = validateAudioFile({
@@ -271,7 +279,10 @@ export async function uploadRecording(
     const metadata: Record<string, unknown> = {
       original_filename: file.name,
     };
+    if (originalPath) metadata.original_path = originalPath;
     if (title) metadata.title = title;
+    const category = inferRecordingCategory({ source, filename: file.name, path, originalPath });
+    const tags = mergeRecordingTags([], category);
 
     const { data: recording, error: insertError } = await supabase
       .from("recordings")
@@ -284,6 +295,8 @@ export async function uploadRecording(
         audio_size_bytes: file.size,
         status: "processing",
         source,
+        category,
+        tags,
         metadata,
       })
       .select("id")

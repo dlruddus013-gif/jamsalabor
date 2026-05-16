@@ -3,13 +3,14 @@ import { transcribeSignedUrlWithNaver } from "@/lib/integrations/naver-speech";
 import { summarizeTranscriptWithLLM } from "@/lib/integrations/llm-summary";
 import { maskText } from "@/lib/api/privacy";
 import { STORAGE_BUCKET } from "@/lib/upload";
+import { CALL_RECORDING_CATEGORY, mergeRecordingTags } from "@/lib/recording-category";
 
 export async function processRecordingNow(recordingId: string) {
   const admin = createSupabaseAdminClient();
 
   const { data: recording, error } = await admin
     .from("recordings")
-    .select("id, audio_path")
+    .select("id, audio_path, source, category, tags")
     .eq("id", recordingId)
     .single();
 
@@ -82,9 +83,9 @@ export async function processRecordingNow(recordingId: string) {
     .update({
       status: "completed",
       sentiment: summary.sentiment,
-      tags: summary.keyTopics,
+      tags: mergeRecordingTags(summary.keyTopics, recording.category === CALL_RECORDING_CATEGORY ? CALL_RECORDING_CATEGORY : null),
       excerpt: maskText(stt.text.slice(0, 220)),
-      category: summary.keyTopics[0] ?? null,
+      category: recording.category === CALL_RECORDING_CATEGORY ? CALL_RECORDING_CATEGORY : summary.keyTopics[0] ?? null,
     })
     .eq("id", recordingId);
 
@@ -105,4 +106,3 @@ export async function processRecordingNow(recordingId: string) {
     provider: summary.provider,
   };
 }
-

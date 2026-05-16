@@ -532,6 +532,7 @@ async function uploadEntries(
     const formData = new FormData();
     formData.append("source", "phone_backup");
     formData.append("title", entry.file.name.replace(/\.[^.]+$/, ""));
+    formData.append("relativePath", entry.relativePath);
 
     try {
       const result = isUsingSupabase()
