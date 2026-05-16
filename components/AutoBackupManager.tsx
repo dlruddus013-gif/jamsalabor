@@ -22,7 +22,7 @@ const STORE_NAME = "handles";
 const HANDLE_KEY = "recordings-directory";
 const STATE_KEY = "jamsa-auto-backup-state-v4";
 const MAX_AUTO_UPLOAD_PER_RUN = 12;
-const MAX_PARALLEL_UPLOADS = 3;
+const MAX_PARALLEL_UPLOADS = 1;
 const MAX_SCAN_FILES = 400;
 const MAX_SCAN_DIRS = 80;
 const SCAN_TIMEOUT_MS = 20_000;
@@ -66,6 +66,7 @@ export default function AutoBackupManager() {
   const [currentFile, setCurrentFile] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const folderInputRef = useRef<HTMLInputElement | null>(null);
   const runningRef = useRef(false);
 
   const supported = useMemo(
@@ -75,6 +76,11 @@ export default function AutoBackupManager() {
 
   useEffect(() => {
     setState(loadState());
+  }, []);
+
+  useEffect(() => {
+    folderInputRef.current?.setAttribute("webkitdirectory", "");
+    folderInputRef.current?.setAttribute("directory", "");
   }, []);
 
   const stats = useMemo(() => {
@@ -145,7 +151,7 @@ export default function AutoBackupManager() {
 
       setStatus("uploading");
       setMessage(`${runnable.length}개 파일을 백업합니다. 중간에 꺼져도 완료된 파일은 보존되고, 다음에는 안 된 파일만 이어서 처리됩니다.`);
-      await uploadEntries(runnable, patchJobs, setCurrentFile);
+      await uploadEntries(runnable, patchJobs, setCurrentFile, MAX_PARALLEL_UPLOADS);
 
       const remaining = countRemaining();
       setStatus("done");
@@ -257,6 +263,11 @@ export default function AutoBackupManager() {
     fileInputRef.current?.click();
   };
 
+  const chooseFolderFiles = () => {
+    if (busy) return;
+    folderInputRef.current?.click();
+  };
+
   const handleFileFallback = async (event: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files ?? []);
     event.target.value = "";
@@ -269,12 +280,18 @@ export default function AutoBackupManager() {
     setMessage(`${files.length}개 파일을 확인하고 있습니다.`);
 
     try {
-      const entries = files.map((file) => ({
-        file,
-        relativePath: (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name,
-        fingerprint: makeFingerprint(file, (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name),
-      }));
-      await processEntries(entries, "선택한 파일");
+      const entries = files
+        .map((file) => {
+          const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
+          return {
+            file,
+            relativePath,
+            fingerprint: makeFingerprint(file, relativePath),
+          };
+        })
+        .sort((a, b) => a.relativePath.localeCompare(b.relativePath, "ko-KR", { numeric: true }));
+      const sourceLabel = entries.some((entry) => entry.relativePath.includes("/")) ? "선택한 폴더" : "선택한 파일";
+      await processEntries(entries, sourceLabel);
     } catch (error) {
       setStatus("error");
       setMessage(error instanceof Error ? error.message : "파일 백업 중 오류가 발생했습니다.");
@@ -323,6 +340,7 @@ export default function AutoBackupManager() {
 
       <div className="p-5 space-y-4">
         <input ref={fileInputRef} type="file" accept={ACCEPT} multiple className="hidden" onChange={handleFileFallback} />
+        <input ref={folderInputRef} type="file" accept={ACCEPT} multiple className="hidden" onChange={handleFileFallback} />
 
         <div className="rounded-xl bg-surface/60 border border-line-soft p-4">
           <div className="flex items-start gap-3">
@@ -380,6 +398,14 @@ export default function AutoBackupManager() {
           >
             <FileAudio size={14} />
             파일로 바로 백업
+          </button>
+          <button
+            onClick={chooseFolderFiles}
+            disabled={busy}
+            className="px-4 py-2.5 rounded-xl bg-paper border border-line text-[13px] font-semibold flex items-center gap-2 disabled:opacity-50"
+          >
+            <FolderOpen size={14} />
+            한 폴더 순차 백업
           </button>
           <button
             onClick={clearSetup}
@@ -489,9 +515,10 @@ function StatusBadge({ status, busy }: { status: BackupStatus; busy: boolean }) 
 async function uploadEntries(
   entries: AudioEntry[],
   patchJobs: (patch: Record<string, PersistedJob>) => void,
-  setCurrentFile: (name: string | null) => void
+  setCurrentFile: (name: string | null) => void,
+  concurrency: number
 ) {
-  await runPool(entries, MAX_PARALLEL_UPLOADS, async (entry) => {
+  await runPool(entries, concurrency, async (entry) => {
     setCurrentFile(entry.relativePath);
     patchJobs({ [entry.fingerprint]: makeJob(entry, "uploading", "서버로 업로드 중") });
 
