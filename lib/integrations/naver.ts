@@ -17,10 +17,10 @@ const SEARCH_ENDPOINTS: Record<NaverSearchType, string> = {
 };
 
 function getNaverCredentials() {
-  const clientId = process.env.NAVER_CLIENT_ID ?? process.env.NAVER_NCP_CLIENT_ID;
-  const clientSecret = process.env.NAVER_CLIENT_SECRET ?? process.env.NAVER_NCP_CLIENT_SECRET;
+  const clientId = process.env.NAVER_SEARCH_CLIENT_ID;
+  const clientSecret = process.env.NAVER_SEARCH_CLIENT_SECRET;
   if (!clientId || !clientSecret) {
-    throw new Error("NAVER_CLIENT_ID and NAVER_CLIENT_SECRET are required.");
+    throw new Error("NAVER_SEARCH_CLIENT_ID and NAVER_SEARCH_CLIENT_SECRET are required.");
   }
   return { clientId, clientSecret };
 }

@@ -15,8 +15,7 @@ type ServiceStatus = {
 
 function hasNaverSearchConfig() {
   return Boolean(
-    (process.env.NAVER_CLIENT_ID || process.env.NAVER_NCP_CLIENT_ID) &&
-      (process.env.NAVER_CLIENT_SECRET || process.env.NAVER_NCP_CLIENT_SECRET)
+    process.env.NAVER_SEARCH_CLIENT_ID && process.env.NAVER_SEARCH_CLIENT_SECRET
   );
 }
 
@@ -85,7 +84,7 @@ export async function GET() {
 
   return NextResponse.json({
     naver: {
-      connected: naverSearch.connected && naverSpeech.connected,
+      connected: naverSearch.connected || naverSpeech.connected,
       search: naverSearch,
       speech: naverSpeech,
     },
