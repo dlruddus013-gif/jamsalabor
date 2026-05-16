@@ -1,0 +1,206 @@
+"use client";
+
+import Link from "next/link";
+import {
+  Smile,
+  Meh,
+  Frown,
+  Clock,
+  ChevronRight,
+  FileText,
+  MessageSquare,
+  Tag,
+  User,
+} from "lucide-react";
+import { cn } from "@/lib/cn";
+import {
+  formatDuration,
+  formatRelativeKR,
+  maskPhone,
+} from "@/lib/mock-data";
+import StatusBadge from "@/components/StatusBadge";
+import RiskBadge from "@/components/RiskBadge";
+import type { SearchHit, MatchedIn } from "@/lib/recordings-search";
+import type { Sentiment } from "@/lib/types";
+
+// ─────────────────────────────────────────────────────────
+// 매칭 출처 칩
+// ─────────────────────────────────────────────────────────
+
+const MATCH_LABEL: Record<MatchedIn, { label: string; icon: typeof FileText }> = {
+  title:      { label: "제목 일치",       icon: Tag },
+  meta:       { label: "정보 일치",       icon: User },
+  summary:    { label: "요약 일치",       icon: MessageSquare },
+  transcript: { label: "전사 일치",       icon: FileText },
+};
+
+// ─────────────────────────────────────────────────────────
+// 감정 아이콘
+// ─────────────────────────────────────────────────────────
+
+const SENT_ICON = { pos: Smile, neu: Meh, neg: Frown };
+const SENT_COLOR: Record<Sentiment, string> = {
+  pos: "text-olive",
+  neu: "text-gold",
+  neg: "text-accent",
+};
+
+interface Props {
+  hits: SearchHit[];
+  query: string;
+  hasFilters: boolean;
+}
+
+export default function SearchResults({ hits, query, hasFilters }: Props) {
+  if (hits.length === 0) {
+    return (
+      <div className="rounded-2xl bg-paper border border-line p-12 text-center">
+        <div className="font-display text-[16px] font-bold mb-1">
+          {hasFilters ? "조건에 맞는 통화가 없습니다" : "통화가 아직 없습니다"}
+        </div>
+        <div className="text-[12px] text-ink-mute">
+          {hasFilters
+            ? "검색어를 줄이거나 필터를 다시 설정해보세요."
+            : "오디오 파일을 업로드하거나 모바일에서 녹음해보세요."}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-2xl bg-paper border border-line overflow-hidden">
+      <div className="divide-y divide-line-soft">
+        {hits.map((h) => (
+          <SearchHitRow key={h.id} hit={h} query={query} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────
+// 결과 행
+// ─────────────────────────────────────────────────────────
+
+function SearchHitRow({ hit, query }: { hit: SearchHit; query: string }) {
+  const sent = hit.sentiment as Sentiment | null;
+  const SentIcon = sent ? SENT_ICON[sent] : Meh;
+  const sentClass = sent ? SENT_COLOR[sent] : "text-ink-mute";
+
+  const titleText = hit.title || hit.customer_name || "제목 없음";
+  const matchInfo = MATCH_LABEL[hit.matched_in];
+  const MatchIcon = matchInfo.icon;
+
+  return (
+    <Link
+      href={`/recordings/${hit.id}`}
+      className="block px-4 py-3.5 hover:bg-surface/50 transition-colors"
+    >
+      <div className="flex items-start gap-3">
+        <div
+          className={cn(
+            "w-9 h-9 rounded-full flex items-center justify-center shrink-0 bg-surface",
+            sentClass
+          )}
+        >
+          <SentIcon size={15} />
+        </div>
+
+        <div className="flex-1 min-w-0">
+          {/* 1줄: 제목 + 시각 */}
+          <div className="flex items-center justify-between gap-2 mb-0.5">
+            <div className="text-[13px] font-semibold truncate">
+              <Highlight text={titleText} query={query} />
+            </div>
+            <div className="text-[10px] num shrink-0 text-ink-mute">
+              {formatRelativeKR(hit.recorded_at)}
+            </div>
+          </div>
+
+          {/* 2줄: 고객 / 번호 */}
+          {(hit.customer_name || hit.customer_phone) && (
+            <div className="text-[11px] num text-ink-soft truncate">
+              {hit.customer_name && (
+                <Highlight text={hit.customer_name} query={query} />
+              )}
+              {hit.customer_name && hit.customer_phone && (
+                <span className="text-ink-mute"> · </span>
+              )}
+              {maskPhone(hit.customer_phone)}
+            </div>
+          )}
+
+          {/* 3줄: 매칭 스니펫 */}
+          {hit.snippet && (
+            <div className="mt-1.5 px-2.5 py-1.5 rounded-lg bg-surface/70 text-[11px] text-ink-soft border-l-2 border-accent/40">
+              <div className="flex items-center gap-1 text-[9px] tracking-wider uppercase text-gold mb-0.5">
+                <MatchIcon size={9} />
+                {matchInfo.label}
+              </div>
+              <div className="line-clamp-2">
+                <Highlight text={hit.snippet} query={query} />
+              </div>
+            </div>
+          )}
+
+          {/* 4줄: 메타 배지들 */}
+          <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+            <StatusBadge status={hit.status as never} />
+            <RiskBadge risk={hit.risk_level} />
+            {hit.category && (
+              <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-gold/10 text-gold font-medium">
+                {hit.category}
+              </span>
+            )}
+            {hit.duration_sec > 0 && (
+              <span className="text-[9px] num flex items-center gap-0.5 text-ink-mute">
+                <Clock size={9} /> {formatDuration(hit.duration_sec)}
+              </span>
+            )}
+            {hit.escalated && (
+              <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-accent/10 text-accent">
+                핸드오프
+              </span>
+            )}
+            {hit.resolved && (
+              <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-olive/10 text-olive">
+                해결
+              </span>
+            )}
+          </div>
+        </div>
+
+        <ChevronRight size={14} className="text-ink-mute shrink-0 mt-2" />
+      </div>
+    </Link>
+  );
+}
+
+// ─────────────────────────────────────────────────────────
+// 키워드 하이라이트
+// ─────────────────────────────────────────────────────────
+
+function Highlight({ text, query }: { text: string; query: string }) {
+  if (!query.trim()) return <>{text}</>;
+  const q = query.trim();
+  // 대소문자 무시 + 메타문자 이스케이프
+  const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`(${escaped})`, "gi");
+  const parts = text.split(re);
+  return (
+    <>
+      {parts.map((part, i) =>
+        re.test(part) ? (
+          <mark
+            key={i}
+            className="bg-gold/30 text-ink rounded px-0.5"
+          >
+            {part}
+          </mark>
+        ) : (
+          <span key={i}>{part}</span>
+        )
+      )}
+    </>
+  );
+}

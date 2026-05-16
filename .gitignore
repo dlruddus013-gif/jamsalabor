@@ -1,13 +1,15 @@
-.env
-.env.local
-.env.*.local
-.vercel/
-__pycache__/
-*.pyc
-*.pyo
-.venv/
-venv/
 node_modules/
+.next/
+out/
+build/
+.env
+.env*.local
 .DS_Store
-Thumbs.db
-*.log
+*.tsbuildinfo
+next-env.d.ts
+.vercel
+
+# Supabase
+supabase/.branches
+supabase/.temp
+supabase/.env

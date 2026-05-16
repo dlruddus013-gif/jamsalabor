@@ -1,0 +1,6 @@
+# Core
+supabase==2.9.1
+python-dotenv==1.0.1
+
+# 진행률 — tqdm 이 없으면 폴백 동작 (한 줄 출력)
+tqdm==4.66.5

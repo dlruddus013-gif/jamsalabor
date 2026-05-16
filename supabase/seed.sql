@@ -1,0 +1,27 @@
+-- ─────────────────────────────────────────────────────────
+-- seed.sql
+-- 로컬 개발용 시드 데이터 (선택)
+-- 실행: supabase db reset (자동 적용) 또는 supabase db seed
+--
+-- 주의: auth.users 의 실제 사용자 ID 가 필요합니다.
+-- 아래 변수 부분을 본인 환경에 맞게 수정하세요.
+-- ─────────────────────────────────────────────────────────
+
+-- 예시: 데모 사용자 (Studio 에서 먼저 생성한 후 ID 복사)
+-- do $$
+-- declare demo_uid uuid := '00000000-0000-0000-0000-000000000001';
+-- begin
+--
+--   insert into public.recordings (id, recorded_at, owner_id, customer_name, customer_phone,
+--                                  duration_sec, status, sentiment, escalated, tags, excerpt, category, source)
+--   values
+--     (gen_random_uuid(), now() - interval '2 hours', demo_uid,
+--      '김미영', '010-2845-****', 272, 'completed', 'pos', true,
+--      array['단체','견학','식사','B2B'], '60명 견학인데 식사 가능한가요…', '단체 견적', 'phone'),
+--     (gen_random_uuid(), now() - interval '3 hours', demo_uid,
+--      '박지훈', '010-7723-****', 374, 'completed', 'neg', true,
+--      array['환불','날씨','결제'], '어제 결제했는데 환불 가능한가요…', '환불', 'phone');
+--
+-- end $$;
+
+-- 시드를 사용하지 않으려면 이 파일을 비워두거나 삭제하세요.

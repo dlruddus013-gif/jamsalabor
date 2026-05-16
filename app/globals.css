@@ -1,0 +1,37 @@
+@import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable.css");
+@import url("https://fonts.googleapis.com/css2?family=Gowun+Batang:wght@400;700&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    font-family: "Pretendard Variable", Pretendard, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  body {
+    @apply bg-cream text-ink;
+  }
+}
+
+@layer utilities {
+  .num {
+    font-feature-settings: "tnum";
+    font-variant-numeric: tabular-nums;
+  }
+  .silk-line {
+    background: linear-gradient(90deg, transparent, #C28C2C55, transparent);
+  }
+  .scroll-thin::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  .scroll-thin::-webkit-scrollbar-thumb {
+    background: #E6DBC2;
+    border-radius: 3px;
+  }
+  .scroll-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
