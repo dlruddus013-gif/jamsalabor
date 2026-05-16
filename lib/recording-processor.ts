@@ -24,6 +24,12 @@ export async function processRecordingNow(recordingId: string) {
     .eq("recording_id", recordingId)
     .in("status", ["queued", "failed"]);
 
+  await admin
+    .from("recordings")
+    .update({ status: "processing" })
+    .eq("id", recordingId)
+    .in("status", ["uploading", "processing", "failed"]);
+
   const { data: signed, error: signedError } = await admin.storage
     .from(STORAGE_BUCKET)
     .createSignedUrl(recording.audio_path, 60 * 30);

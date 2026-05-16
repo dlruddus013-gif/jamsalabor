@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
   Phone,
@@ -56,7 +57,35 @@ const SENT_CLASS: Record<Sentiment, string> = {
 export default function RecordingDetailView({ data }: { data: RecordingDetail }) {
   const { recording, transcript, summary, audioUrl, jobError } = data;
   const [currentSec, setCurrentSec] = useState(0);
+  const [processingRequested, setProcessingRequested] = useState(false);
+  const [, startTransition] = useTransition();
+  const router = useRouter();
   const playerRef = useRef<RecordingPlayerHandle | null>(null);
+
+  const liveStatus = recording.status === "uploading" || recording.status === "processing";
+
+  useEffect(() => {
+    if (!liveStatus) return;
+
+    const timer = window.setInterval(() => {
+      startTransition(() => router.refresh());
+    }, 3000);
+
+    return () => window.clearInterval(timer);
+  }, [liveStatus, router]);
+
+  useEffect(() => {
+    if (!liveStatus || processingRequested) return;
+
+    setProcessingRequested(true);
+    void fetch("/api/jobs/process-recording", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ recordingId: recording.id }),
+    }).finally(() => {
+      startTransition(() => router.refresh());
+    });
+  }, [liveStatus, processingRequested, recording.id, router]);
 
   // transcript 클릭 → audio 시킹 + 재생 시작
   const handleSeek = (sec: number) => {
