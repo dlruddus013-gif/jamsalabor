@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -46,6 +46,7 @@ const SENT_COLOR: Record<Sentiment, string> = {
   neu: "text-gold",
   neg: "text-accent",
 };
+const LOCAL_RECORDINGS_KEY = "jamsa-local-backup-recordings-v1";
 
 interface Props {
   hits: SearchHit[];
@@ -55,7 +56,9 @@ interface Props {
 
 export default function SearchResults({ hits, query, hasFilters }: Props) {
   const router = useRouter();
-  const hasLiveJobs = hits.some((hit) => hit.status === "uploading" || hit.status === "processing");
+  const [localHits, setLocalHits] = useState<SearchHit[]>([]);
+  const displayHits = useMemo(() => mergeLocalHits(hits, localHits, query), [hits, localHits, query]);
+  const hasLiveJobs = displayHits.some((hit) => hit.status === "uploading" || hit.status === "processing");
 
   useEffect(() => {
     if (!hasLiveJobs) return;
@@ -65,7 +68,18 @@ export default function SearchResults({ hits, query, hasFilters }: Props) {
     return () => window.clearInterval(timer);
   }, [hasLiveJobs, router]);
 
-  if (hits.length === 0) {
+  useEffect(() => {
+    const load = () => setLocalHits(loadLocalBackupRecordings());
+    load();
+    const timer = window.setInterval(load, 3000);
+    window.addEventListener("storage", load);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("storage", load);
+    };
+  }, []);
+
+  if (displayHits.length === 0) {
     return (
       <div className="rounded-2xl bg-paper border border-line p-12 text-center">
         <div className="font-display text-[16px] font-bold mb-1">
@@ -80,7 +94,7 @@ export default function SearchResults({ hits, query, hasFilters }: Props) {
     );
   }
 
-  const groups = groupHitsByPhoneAndDate(hits);
+  const groups = groupHitsByPhoneAndDate(displayHits);
 
   return (
     <div className="space-y-3">
@@ -123,12 +137,9 @@ function SearchHitRow({ hit, query }: { hit: SearchHit; query: string }) {
   const titleText = hit.title || hit.customer_name || "제목 없음";
   const matchInfo = MATCH_LABEL[hit.matched_in];
   const MatchIcon = matchInfo.icon;
+  const isLocalBackup = hit.id.startsWith("local_backup:");
 
-  return (
-    <Link
-      href={`/recordings/${hit.id}`}
-      className="block px-4 py-3.5 hover:bg-surface/50 transition-colors"
-    >
+  const content = (
       <div className="flex items-start gap-3">
         <div
           className={cn(
@@ -203,8 +214,20 @@ function SearchHitRow({ hit, query }: { hit: SearchHit; query: string }) {
           </div>
         </div>
 
-        <ChevronRight size={14} className="text-ink-mute shrink-0 mt-2" />
+        {!isLocalBackup && <ChevronRight size={14} className="text-ink-mute shrink-0 mt-2" />}
       </div>
+  );
+
+  if (isLocalBackup) {
+    return <div className="block px-4 py-3.5 bg-surface/20">{content}</div>;
+  }
+
+  return (
+    <Link
+      href={`/recordings/${hit.id}`}
+      className="block px-4 py-3.5 hover:bg-surface/50 transition-colors"
+    >
+      {content}
     </Link>
   );
 }
@@ -308,4 +331,29 @@ function formatDateGroup(key: string) {
     day: "numeric",
     weekday: "short",
   }).format(date);
+}
+
+function loadLocalBackupRecordings(): SearchHit[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(LOCAL_RECORDINGS_KEY) ?? "[]") as SearchHit[];
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((hit) => typeof hit.id === "string" && hit.id.startsWith("local_backup:"));
+  } catch {
+    return [];
+  }
+}
+
+function mergeLocalHits(serverHits: SearchHit[], localHits: SearchHit[], query: string) {
+  const q = query.trim().toLowerCase();
+  const seen = new Set(serverHits.map((hit) => hit.id));
+  const filteredLocal = localHits.filter((hit) => {
+    if (seen.has(hit.id)) return false;
+    if (!q) return true;
+    return [hit.title, hit.customer_name, hit.customer_phone, hit.excerpt, hit.snippet, hit.tags.join(" ")]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase()
+      .includes(q);
+  });
+  return [...filteredLocal, ...serverHits].sort((a, b) => Date.parse(b.recorded_at) - Date.parse(a.recorded_at));
 }

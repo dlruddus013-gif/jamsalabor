@@ -22,6 +22,7 @@ const DB_NAME = "jamsa-auto-backup";
 const STORE_NAME = "handles";
 const HANDLE_KEY = "recordings-directory";
 const STATE_KEY = "jamsa-auto-backup-state-v4";
+const LOCAL_RECORDINGS_KEY = "jamsa-local-backup-recordings-v1";
 const MAX_PARALLEL_UPLOADS = 3;
 const MAX_SCAN_FILES = 100_000;
 const MAX_SCAN_DIRS = 1_000;
@@ -604,6 +605,7 @@ async function uploadEntries(
         return;
       }
       if (result.mock) {
+        saveLocalBackupRecording(entry);
         patchJobs({ [entry.fingerprint]: makeJob(entry, "uploaded", "백업 완료 · 테스트 모드") });
         return;
       }
@@ -743,6 +745,85 @@ async function collectAudioFiles(
 
 function makeFingerprint(file: File, path: string) {
   return `${path}|${file.name}|${file.size}|${file.lastModified}`;
+}
+
+function saveLocalBackupRecording(entry: AudioEntry) {
+  try {
+    const existing = JSON.parse(localStorage.getItem(LOCAL_RECORDINGS_KEY) ?? "[]") as LocalBackupRecording[];
+    if (existing.some((recording) => recording.fingerprint === entry.fingerprint)) return;
+
+    const title = entry.file.name.replace(/\.[^.]+$/, "");
+    const phone = extractPhoneFromText(`${entry.relativePath} ${entry.file.name}`);
+    const recordedAt = parseRecordedAtFromName(entry.file.name) ?? new Date(entry.file.lastModified || Date.now()).toISOString();
+    const next: LocalBackupRecording = {
+      fingerprint: entry.fingerprint,
+      id: `local_backup:${entry.fingerprint}`,
+      recorded_at: recordedAt,
+      title,
+      customer_name: null,
+      customer_phone: phone,
+      category: "통화녹음",
+      status: "completed",
+      sentiment: null,
+      risk_level: null,
+      resolved: false,
+      escalated: false,
+      duration_sec: 0,
+      excerpt: `${entry.file.name} 백업 완료 · 테스트 모드`,
+      tags: ["통화녹음", "폰백업"],
+      matched_in: "meta",
+      snippet: `${entry.file.name} 백업 완료 · 테스트 모드`,
+    };
+
+    const records = [next, ...existing].slice(0, 5000);
+    localStorage.setItem(LOCAL_RECORDINGS_KEY, JSON.stringify(records));
+  } catch {
+    // 로컬 표시용 보조 저장소라 실패해도 백업 자체는 계속 진행합니다.
+  }
+}
+
+interface LocalBackupRecording {
+  fingerprint: string;
+  id: string;
+  recorded_at: string;
+  title: string | null;
+  customer_name: string | null;
+  customer_phone: string | null;
+  category: string | null;
+  status: string;
+  sentiment: string | null;
+  risk_level: null;
+  resolved: boolean;
+  escalated: boolean;
+  duration_sec: number;
+  excerpt: string | null;
+  tags: string[];
+  matched_in: "meta";
+  snippet: string | null;
+}
+
+function extractPhoneFromText(text: string) {
+  const dashed = text.match(/(?:\+82[-_\s]?)?0\d{1,2}[-_\s.]?\d{3,4}[-_\s.]?\d{4}/);
+  if (dashed) return normalizePhoneText(dashed[0]);
+  const compact = text.match(/\b0\d{8,10}\b/);
+  return compact ? normalizePhoneText(compact[0]) : null;
+}
+
+function normalizePhoneText(phone: string) {
+  let digits = phone.replace(/\D/g, "");
+  if (digits.startsWith("82")) digits = `0${digits.slice(2)}`;
+  if (digits.length === 11) return `${digits.slice(0, 3)}-${digits.slice(3, 7)}-${digits.slice(7)}`;
+  if (digits.length === 10 && digits.startsWith("02")) return `${digits.slice(0, 2)}-${digits.slice(2, 6)}-${digits.slice(6)}`;
+  if (digits.length === 10) return `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}`;
+  return digits || null;
+}
+
+function parseRecordedAtFromName(name: string) {
+  const match = name.match(/(20\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})/);
+  if (!match) return null;
+  const [, year, month, day, hour, minute, second] = match;
+  const date = new Date(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second));
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
 function shouldScanDirectory(name: string) {
