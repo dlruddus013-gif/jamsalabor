@@ -49,7 +49,7 @@ export type UploadErrorCode =
   | "unknown";
 
 export type UploadResult =
-  | { ok: true; id: string; mock?: boolean }
+  | { ok: true; id: string; mock?: boolean; duplicate?: boolean }
   | { ok: false; error: string; code: UploadErrorCode };
 
 export async function registerDirectUploadedRecording(
@@ -96,6 +96,18 @@ export async function registerDirectUploadedRecording(
     const validation = validateAudioFile({ name: originalName, size, type: contentType });
     if (!validation.valid) {
       return { ok: false, error: validation.reason, code: "invalid_file" };
+    }
+
+    const duplicate = await findDuplicateRecording(supabase, {
+      ownerId: user.id,
+      source,
+      originalName,
+      originalPath,
+      size,
+    });
+    if (duplicate?.id) {
+      await rollbackStorage(path);
+      return { ok: true, id: duplicate.id, duplicate: true };
     }
 
     const { data: canStore, error: quotaError } = await supabase.rpc("can_store_recording", {
@@ -257,6 +269,16 @@ export async function uploadRecording(
     const safeBase = sanitizeFilename(file.name);
     const path = `${user.id}/${Date.now()}_${safeBase}`;
     const contentType = file.type || `audio/${ext}`;
+    const duplicate = await findDuplicateRecording(supabase, {
+      ownerId: user.id,
+      source,
+      originalName: file.name,
+      originalPath,
+      size: file.size,
+    });
+    if (duplicate?.id) {
+      return { ok: true, id: duplicate.id, duplicate: true };
+    }
 
     // 4-3) Storage 업로드
     const { error: uploadError } = await supabase.storage
@@ -368,4 +390,37 @@ async function rollbackStorage(path: string): Promise<void> {
   } catch (e) {
     console.error("[upload] storage rollback failed:", e);
   }
+}
+
+async function findDuplicateRecording(
+  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
+  input: {
+    ownerId: string;
+    source: AllowedSource;
+    originalName: string;
+    originalPath: string;
+    size: number;
+  }
+): Promise<{ id: string } | null> {
+  const metadataFilter: Record<string, string> = {
+    original_filename: input.originalName,
+  };
+  if (input.originalPath) metadataFilter.original_path = input.originalPath;
+
+  const { data, error } = await supabase
+    .from("recordings")
+    .select("id")
+    .eq("owner_id", input.ownerId)
+    .eq("source", input.source)
+    .eq("audio_size_bytes", input.size)
+    .contains("metadata", metadataFilter)
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    console.error("[upload] duplicate lookup failed:", error);
+    return null;
+  }
+  return data as { id: string } | null;
 }

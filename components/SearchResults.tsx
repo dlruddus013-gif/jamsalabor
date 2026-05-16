@@ -80,13 +80,33 @@ export default function SearchResults({ hits, query, hasFilters }: Props) {
     );
   }
 
+  const groups = groupHitsByPhoneAndDate(hits);
+
   return (
-    <div className="rounded-2xl bg-paper border border-line overflow-hidden">
-      <div className="divide-y divide-line-soft">
-        {hits.map((h) => (
-          <SearchHitRow key={h.id} hit={h} query={query} />
+    <div className="space-y-3">
+      {groups.map((group) => (
+        <div key={group.key} className="rounded-2xl bg-paper border border-line overflow-hidden">
+          <div className="px-4 py-3 bg-cream/60 border-b border-line-soft flex items-center justify-between gap-3">
+            <div>
+              <div className="text-[13px] font-bold num">{group.label}</div>
+              <div className="text-[11px] text-ink-mute">같은 번호 통화 {group.count}건</div>
+            </div>
+            <div className="text-[10px] text-ink-mute num">{group.dateCount}일</div>
+          </div>
+          {group.dates.map((date) => (
+            <div key={date.key}>
+              <div className="px-4 py-2 bg-surface/40 text-[11px] font-semibold text-ink-soft border-b border-line-soft">
+                {date.label}
+              </div>
+              <div className="divide-y divide-line-soft">
+                {date.hits.map((h) => (
+                  <SearchHitRow key={h.id} hit={h} query={query} />
+                ))}
+              </div>
+            </div>
         ))}
-      </div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -216,4 +236,76 @@ function Highlight({ text, query }: { text: string; query: string }) {
       )}
     </>
   );
+}
+
+function groupHitsByPhoneAndDate(hits: SearchHit[]) {
+  const phoneGroups = new Map<string, { label: string; hits: SearchHit[] }>();
+
+  for (const hit of hits) {
+    const phone = extractPhone(hit);
+    const key = phone ? normalizePhone(phone) : `unknown:${hit.id}`;
+    const label = phone ? formatPhone(normalizePhone(phone)) : "번호 없음";
+    const group = phoneGroups.get(key) ?? { label, hits: [] };
+    group.hits.push(hit);
+    phoneGroups.set(key, group);
+  }
+
+  return Array.from(phoneGroups.entries()).map(([key, group]) => {
+    const dates = new Map<string, SearchHit[]>();
+    for (const hit of group.hits) {
+      const dateKey = toDateKey(hit.recorded_at);
+      dates.set(dateKey, [...(dates.get(dateKey) ?? []), hit]);
+    }
+    return {
+      key,
+      label: group.label,
+      count: group.hits.length,
+      dateCount: dates.size,
+      dates: Array.from(dates.entries()).map(([dateKey, dateHits]) => ({
+        key: dateKey,
+        label: formatDateGroup(dateKey),
+        hits: dateHits,
+      })),
+    };
+  });
+}
+
+function extractPhone(hit: SearchHit) {
+  const text = [hit.customer_phone, hit.customer_name, hit.title, hit.excerpt, hit.snippet, hit.tags.join(" ")]
+    .filter(Boolean)
+    .join(" ");
+  const dashed = text.match(/(?:\+82[-\s]?)?0\d{1,2}[-_\s.]?\d{3,4}[-_\s.]?\d{4}/);
+  if (dashed) return dashed[0];
+  const compact = text.match(/\b0\d{8,10}\b/);
+  return compact?.[0] ?? null;
+}
+
+function normalizePhone(phone: string) {
+  let digits = phone.replace(/\D/g, "");
+  if (digits.startsWith("82")) digits = `0${digits.slice(2)}`;
+  return digits;
+}
+
+function formatPhone(digits: string) {
+  if (digits.length === 11) return `${digits.slice(0, 3)}-${digits.slice(3, 7)}-${digits.slice(7)}`;
+  if (digits.length === 10 && digits.startsWith("02")) return `${digits.slice(0, 2)}-${digits.slice(2, 6)}-${digits.slice(6)}`;
+  if (digits.length === 10) return `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}`;
+  return digits;
+}
+
+function toDateKey(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "날짜 없음";
+  return date.toISOString().slice(0, 10);
+}
+
+function formatDateGroup(key: string) {
+  if (key === "날짜 없음") return key;
+  const date = new Date(`${key}T00:00:00`);
+  return new Intl.DateTimeFormat("ko-KR", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    weekday: "short",
+  }).format(date);
 }

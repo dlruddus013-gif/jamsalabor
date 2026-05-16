@@ -22,10 +22,11 @@ const DB_NAME = "jamsa-auto-backup";
 const STORE_NAME = "handles";
 const HANDLE_KEY = "recordings-directory";
 const STATE_KEY = "jamsa-auto-backup-state-v4";
-const MAX_PARALLEL_UPLOADS = 1;
+const MAX_PARALLEL_UPLOADS = 3;
 const MAX_SCAN_FILES = 100_000;
 const MAX_SCAN_DIRS = 80;
-const SCAN_TIMEOUT_MS = 60_000;
+const SCAN_TIMEOUT_MS = 300_000;
+const UPLOAD_TIMEOUT_MS = 10 * 60_000;
 const ACCEPT = "audio/*,.mp3,.m4a,.wav,.webm,.aac,.ogg,.oga,.3gp,.amr";
 
 type BackupStatus = "unsupported" | "idle" | "ready" | "scanning" | "uploading" | "done" | "error";
@@ -218,7 +219,7 @@ export default function AutoBackupManager() {
         const entries = await withTimeout(
           collectAudioFiles(handle, "", { startedAt: Date.now(), dirs: 0, files: 0 }),
           SCAN_TIMEOUT_MS,
-          "폴더 스캔이 60초를 넘었습니다. 실제 녹음 파일이 들어있는 하위 폴더만 선택해 주세요."
+          "폴더 스캔이 5분을 넘었습니다. 실제 녹음 파일이 들어있는 하위 폴더만 선택해 주세요."
         );
 
         await processEntries(entries, "녹음 폴더");
@@ -440,7 +441,7 @@ export default function AutoBackupManager() {
             className="px-4 py-2.5 rounded-xl bg-paper border border-line text-[13px] font-semibold flex items-center gap-2 disabled:opacity-50"
           >
             <FolderOpen size={14} />
-            한 폴더 순차 백업
+            같은 폴더 파일로 업로드
           </button>
           <button
             onClick={clearSetup}
@@ -452,8 +453,8 @@ export default function AutoBackupManager() {
         </div>
 
         <div className="text-[11px] text-ink-mute leading-5">
-          폴더 스캔은 60초가 지나면 자동 중단됩니다. 계속 멈추면 `Recordings`, `Call`, `Voice Recorder` 같은 실제 녹음 폴더만 선택하거나
-          파일로 바로 백업을 눌러 여러 녹음 파일을 선택해 주세요. 선택한 파일은 끝까지 순차 처리하고, 동시에 {MAX_PARALLEL_UPLOADS}개씩 업로드합니다.
+          폴더 스캔은 5분이 지나면 자동 중단됩니다. 계속 멈추면 `Recordings`, `Call`, `Voice Recorder` 같은 실제 녹음 폴더만 선택하거나
+          같은 폴더 파일로 업로드를 눌러 폴더를 다시 선택해 주세요. 이미 백업된 파일은 건너뛰고, 동시에 최대 {MAX_PARALLEL_UPLOADS}개씩 업로드합니다.
         </div>
 
         {recentJobs.length > 0 && (
@@ -571,10 +572,14 @@ async function uploadEntries(
 
     try {
       const result = isUsingSupabase()
-        ? await uploadLargeFileDirectly(entry, formData)
-        : await uploadSmallFileThroughServer(entry, formData);
+        ? await withTimeout(uploadLargeFileDirectly(entry, formData), UPLOAD_TIMEOUT_MS, "업로드 시간이 초과되어 다음 파일로 넘어갑니다.")
+        : await withTimeout(uploadSmallFileThroughServer(entry, formData), UPLOAD_TIMEOUT_MS, "업로드 시간이 초과되어 다음 파일로 넘어갑니다.");
       if (!result.ok) {
         patchJobs({ [entry.fingerprint]: makeJob(entry, "failed", result.error) });
+        return;
+      }
+      if (result.duplicate) {
+        patchJobs({ [entry.fingerprint]: makeJob(entry, "skipped", "이미 백업된 파일 · 중복 건너뜀") });
         return;
       }
       if (result.mock) {
@@ -587,8 +592,8 @@ async function uploadEntries(
         patchJobs({
           [entry.fingerprint]: makeJob(
             entry,
-            stt.ok ? "uploaded" : "failed",
-            stt.ok ? "백업 완료 · 통화변환 완료" : stt.error
+            "uploaded",
+            stt.ok ? "백업 완료 · 통화변환 완료" : `백업 완료 · 통화변환 재시도 필요: ${stt.error}`
           ),
         });
       });
@@ -754,18 +759,60 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promi
 function loadState(): BackupState {
   try {
     const parsed = JSON.parse(localStorage.getItem(STATE_KEY) ?? "") as BackupState;
-    if (parsed && typeof parsed.jobs === "object") return parsed;
+    if (parsed && typeof parsed.jobs === "object") return normalizeRecoverableState(parsed);
   } catch {
     return EMPTY_STATE;
   }
   return EMPTY_STATE;
 }
 
+function normalizeRecoverableState(state: BackupState): BackupState {
+  let changed = false;
+  const jobs = Object.fromEntries(
+    Object.entries(state.jobs).map(([key, job]) => {
+      if (job.status === "uploading") {
+        changed = true;
+        return [
+          key,
+          {
+            ...job,
+            status: "queued" as JobStatus,
+            message: "이전 업로드 중단 · 다시 대기",
+            updatedAt: Date.now(),
+          },
+        ];
+      }
+      if (job.status === "converting") {
+        changed = true;
+        return [
+          key,
+          {
+            ...job,
+            status: "uploaded" as JobStatus,
+            message: "백업 완료 · 서버에서 통화변환 계속 진행",
+            updatedAt: Date.now(),
+          },
+        ];
+      }
+      return [key, job];
+    })
+  );
+  const next = { jobs };
+  if (changed) saveState(next);
+  return next;
+}
+
 function saveState(state: BackupState) {
-  const jobs = Object.values(state.jobs)
-    .sort((a, b) => b.updatedAt - a.updatedAt)
-    .slice(0, 10000);
-  localStorage.setItem(STATE_KEY, JSON.stringify({ jobs: Object.fromEntries(jobs.map((job) => [job.fingerprint, job])) }));
+  const sorted = Object.values(state.jobs).sort((a, b) => b.updatedAt - a.updatedAt);
+  for (const limit of [MAX_SCAN_FILES, 50_000, 20_000, 10_000, 5_000]) {
+    try {
+      const jobs = sorted.slice(0, limit);
+      localStorage.setItem(STATE_KEY, JSON.stringify({ jobs: Object.fromEntries(jobs.map((job) => [job.fingerprint, job])) }));
+      return;
+    } catch {
+      continue;
+    }
+  }
 }
 
 function openDb(): Promise<IDBDatabase> {
