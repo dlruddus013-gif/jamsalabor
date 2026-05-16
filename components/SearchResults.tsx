@@ -47,6 +47,7 @@ const SENT_COLOR: Record<Sentiment, string> = {
   neg: "text-accent",
 };
 const LOCAL_RECORDINGS_KEY = "jamsa-local-backup-recordings-v1";
+const BACKUP_STATE_KEY = "jamsa-auto-backup-state-v4";
 
 interface Props {
   hits: SearchHit[];
@@ -336,11 +337,73 @@ function formatDateGroup(key: string) {
 function loadLocalBackupRecordings(): SearchHit[] {
   try {
     const parsed = JSON.parse(localStorage.getItem(LOCAL_RECORDINGS_KEY) ?? "[]") as SearchHit[];
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((hit) => typeof hit.id === "string" && hit.id.startsWith("local_backup:"));
+    const saved = Array.isArray(parsed)
+      ? parsed.filter((hit) => typeof hit.id === "string" && hit.id.startsWith("local_backup:"))
+      : [];
+    return mergeLocalBackupState(saved, loadBackupStateHits());
+  } catch {
+    return loadBackupStateHits();
+  }
+}
+
+function loadBackupStateHits(): SearchHit[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(BACKUP_STATE_KEY) ?? "{}") as {
+      jobs?: Record<
+        string,
+        {
+          fingerprint: string;
+          name: string;
+          size: number;
+          modified: number;
+          status: string;
+          message: string;
+        }
+      >;
+    };
+    const jobs = Object.values(parsed.jobs ?? {});
+    return jobs
+      .filter((job) => job.status === "uploaded" || job.status === "converting")
+      .slice(0, 5000)
+      .map((job) => {
+        const title = job.name.split("/").pop()?.replace(/\.[^.]+$/, "") || job.name;
+        const recordedAt = Number.isFinite(job.modified) && job.modified > 0
+          ? new Date(job.modified).toISOString()
+          : new Date().toISOString();
+        return {
+          id: `local_backup:${job.fingerprint}`,
+          recorded_at: recordedAt,
+          title,
+          customer_name: null,
+          customer_phone: extractPhoneFromText(job.name),
+          category: "통화녹음",
+          status: job.status === "converting" ? "processing" : "completed",
+          sentiment: null,
+          risk_level: null,
+          resolved: false,
+          escalated: false,
+          duration_sec: 0,
+          excerpt: `${job.name} backup completed`,
+          tags: ["통화녹음", "폰백업"],
+          matched_in: "meta" as const,
+          snippet: job.message || `${job.name} backup completed`,
+        };
+      });
   } catch {
     return [];
   }
+}
+
+function mergeLocalBackupState(saved: SearchHit[], stateHits: SearchHit[]) {
+  const seen = new Set(saved.map((hit) => hit.id));
+  return [...saved, ...stateHits.filter((hit) => !seen.has(hit.id))];
+}
+
+function extractPhoneFromText(text: string) {
+  const dashed = text.match(/(?:\+82[-_\s]?)?0\d{1,2}[-_\s.]?\d{3,4}[-_\s.]?\d{4}/);
+  if (dashed) return formatPhone(normalizePhone(dashed[0]));
+  const compact = text.match(/\b0\d{8,10}\b/);
+  return compact ? formatPhone(normalizePhone(compact[0])) : null;
 }
 
 function mergeLocalHits(serverHits: SearchHit[], localHits: SearchHit[], query: string) {
