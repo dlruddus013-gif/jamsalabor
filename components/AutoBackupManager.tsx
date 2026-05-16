@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { CheckCircle2, FolderOpen, Loader2, RefreshCcw, ShieldCheck, Smartphone, XCircle } from "lucide-react";
 import { uploadRecording } from "@/app/(app)/upload/actions";
 import { ACCEPTED_EXTENSIONS, validateAudioFile } from "@/lib/upload";
@@ -9,8 +9,9 @@ import { cn } from "@/lib/cn";
 const DB_NAME = "jamsa-auto-backup";
 const STORE_NAME = "handles";
 const HANDLE_KEY = "recordings-directory";
-const HASH_KEY = "jamsa-uploaded-audio-hashes";
-const MAX_AUTO_UPLOAD_PER_SCAN = 30;
+const UPLOADED_KEY = "jamsa-uploaded-audio-fingerprints";
+const MAX_AUTO_UPLOAD_PER_SCAN = 12;
+const MAX_PARALLEL_UPLOADS = 3;
 
 type BackupStatus = "unsupported" | "idle" | "ready" | "scanning" | "done" | "error";
 
@@ -23,13 +24,16 @@ interface BackupLog {
 interface AudioEntry {
   file: File;
   relativePath: string;
+  fingerprint: string;
 }
 
 export default function AutoBackupManager() {
   const [status, setStatus] = useState<BackupStatus>("idle");
-  const [message, setMessage] = useState("녹음 폴더를 한 번 지정하면 다음 접속부터 자동 백업을 시도합니다.");
+  const [message, setMessage] = useState("녹음 폴더를 한 번 지정하면 다음 접속부터 새 파일을 자동 백업합니다.");
   const [logs, setLogs] = useState<BackupLog[]>([]);
+  const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [isPending, startTransition] = useTransition();
+  const runningRef = useRef(false);
 
   const supported = useMemo(
     () => typeof window !== "undefined" && "showDirectoryPicker" in window && "indexedDB" in window,
@@ -40,11 +44,13 @@ export default function AutoBackupManager() {
     (silent = false) => {
       if (!supported) {
         setStatus("unsupported");
-        setMessage("이 브라우저는 폴더 자동 접근을 지원하지 않습니다. Chrome/Edge 최신 버전이나 Android 동반 앱을 사용하세요.");
+        setMessage("이 브라우저는 폴더 자동 접근을 지원하지 않습니다. Chrome/Edge 최신 버전 또는 Android 동반 앱이 필요합니다.");
         return;
       }
+      if (runningRef.current) return;
 
       startTransition(async () => {
+        runningRef.current = true;
         try {
           const handle = await getSavedDirectoryHandle();
           if (!handle) {
@@ -61,14 +67,22 @@ export default function AutoBackupManager() {
           }
 
           setStatus("scanning");
-          setMessage("녹음 폴더를 스캔하고 새 파일을 백업하는 중입니다.");
-          const result = await scanAndUpload(handle);
+          setMessage("새 녹음파일을 빠르게 찾는 중입니다.");
+          setProgress({ done: 0, total: 0 });
+
+          const result = await scanAndUpload(handle, (done, total) => {
+            setProgress({ done, total });
+            if (total > 0) setMessage(`자동 백업 중입니다. ${done}/${total}개 처리 완료`);
+          });
+
           setLogs(result.logs);
           setStatus("done");
           setMessage(`자동 백업 완료: 새 파일 ${result.uploaded}개 업로드, ${result.skipped}개 건너뜀.`);
         } catch (error) {
           setStatus("error");
           setMessage(error instanceof Error ? error.message : "자동 백업 중 오류가 발생했습니다.");
+        } finally {
+          runningRef.current = false;
         }
       });
     },
@@ -76,7 +90,8 @@ export default function AutoBackupManager() {
   );
 
   useEffect(() => {
-    scanSavedFolder(true);
+    const timer = window.setTimeout(() => scanSavedFolder(true), 400);
+    return () => window.clearTimeout(timer);
   }, [scanSavedFolder]);
 
   const chooseFolder = () => {
@@ -87,11 +102,7 @@ export default function AutoBackupManager() {
           return;
         }
         const picker = (window as any).showDirectoryPicker as (options?: unknown) => Promise<any>;
-        const handle = await picker({
-          id: "jamsa-recordings",
-          mode: "read",
-          startIn: "music",
-        });
+        const handle = await picker({ id: "jamsa-recordings", mode: "read", startIn: "music" });
         const permission = await ensurePermission(handle);
         if (!permission) {
           setStatus("idle");
@@ -100,7 +111,7 @@ export default function AutoBackupManager() {
         }
         await saveDirectoryHandle(handle);
         setStatus("ready");
-        setMessage("녹음 폴더 권한이 저장되었습니다. 이제 앱 접속 시 자동 백업을 시도합니다.");
+        setMessage("녹음 폴더 권한이 저장되었습니다. 접속 시 자동 백업이 켜졌습니다.");
         scanSavedFolder(false);
       } catch (error) {
         setStatus("error");
@@ -112,8 +123,9 @@ export default function AutoBackupManager() {
   const clearSetup = () => {
     startTransition(async () => {
       await deleteSavedDirectoryHandle();
-      localStorage.removeItem(HASH_KEY);
+      localStorage.removeItem(UPLOADED_KEY);
       setLogs([]);
+      setProgress({ done: 0, total: 0 });
       setStatus("idle");
       setMessage("자동 백업 설정을 초기화했습니다.");
     });
@@ -129,17 +141,27 @@ export default function AutoBackupManager() {
           <div>
             <h2 className="font-display text-[18px] font-bold">접속 시 자동 백업</h2>
             <p className="text-[12px] text-ink-mute mt-1">
-              녹음 폴더 권한을 저장하고 새 오디오 파일만 자동으로 업로드합니다.
+              앱에 들어오면 저장된 녹음 폴더에서 새 파일만 찾아 빠르게 업로드합니다.
             </p>
           </div>
         </div>
-        <StatusBadge status={status} busy={isPending} />
+        <StatusBadge status={status} busy={isPending || runningRef.current} />
       </div>
 
       <div className="p-5 space-y-4">
         <div className="rounded-xl bg-surface/60 border border-line-soft p-4 flex items-start gap-3">
           <ShieldCheck size={17} className="text-olive mt-0.5 shrink-0" />
-          <div className="text-[13px] leading-6 text-ink-soft">{message}</div>
+          <div className="text-[13px] leading-6 text-ink-soft">
+            {message}
+            {progress.total > 0 && (
+              <div className="mt-3 h-2 rounded-full bg-line-soft overflow-hidden">
+                <div
+                  className="h-full bg-olive transition-all"
+                  style={{ width: `${Math.round((progress.done / progress.total) * 100)}%` }}
+                />
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="flex flex-wrap gap-2">
@@ -169,8 +191,8 @@ export default function AutoBackupManager() {
         </div>
 
         <div className="text-[11px] text-ink-mute leading-5">
-          권장 폴더: Samsung Voice Recorder, Recordings, Call, Voice Recorder 등 녹음 앱이 저장하는 폴더.
-          Android에서 브라우저가 폴더 API를 지원하지 않으면 Android 동반 앱 방식이 필요합니다.
+          속도 개선: 전체 파일 해시 계산 없이 경로, 파일명, 크기, 수정시간으로 중복을 판단합니다.
+          한 번에 최대 {MAX_AUTO_UPLOAD_PER_SCAN}개, 동시 {MAX_PARALLEL_UPLOADS}개씩 업로드합니다.
         </div>
 
         {logs.length > 0 && (
@@ -229,29 +251,31 @@ function StatusBadge({ status, busy }: { status: BackupStatus; busy: boolean }) 
   );
 }
 
-async function scanAndUpload(handle: any) {
-  const uploadedHashes = getUploadedHashes();
+async function scanAndUpload(handle: any, onProgress: (done: number, total: number) => void) {
+  const uploadedFingerprints = getUploadedFingerprints();
   const entries = await collectAudioFiles(handle);
   const logs: BackupLog[] = [];
-  let uploaded = 0;
-  let skipped = 0;
+  const freshEntries = entries
+    .filter((entry) => !uploadedFingerprints.has(entry.fingerprint))
+    .slice(0, MAX_AUTO_UPLOAD_PER_SCAN);
 
-  for (const entry of entries.slice(0, MAX_AUTO_UPLOAD_PER_SCAN)) {
+  let uploaded = 0;
+  let skipped = entries.length - freshEntries.length;
+  let done = 0;
+  onProgress(done, freshEntries.length);
+
+  await runPool(freshEntries, MAX_PARALLEL_UPLOADS, async (entry) => {
     const validation = validateAudioFile({
       name: entry.file.name,
       size: entry.file.size,
       type: entry.file.type,
     });
+
     if (!validation.valid) {
       logs.push({ name: entry.relativePath, status: "failed", message: validation.reason });
-      continue;
-    }
-
-    const hash = await hashFile(entry.file);
-    if (uploadedHashes.has(hash)) {
-      skipped += 1;
-      logs.push({ name: entry.relativePath, status: "skipped", message: "이미 백업된 파일입니다." });
-      continue;
+      done += 1;
+      onProgress(done, freshEntries.length);
+      return;
     }
 
     const formData = new FormData();
@@ -262,19 +286,24 @@ async function scanAndUpload(handle: any) {
     const result = await uploadRecording(formData);
     if (result.ok) {
       uploaded += 1;
-      uploadedHashes.add(hash);
+      uploadedFingerprints.add(entry.fingerprint);
       logs.push({ name: entry.relativePath, status: "uploaded", message: "백업 및 STT 대기열 등록 완료" });
     } else {
       logs.push({ name: entry.relativePath, status: "failed", message: result.error });
     }
-  }
+    done += 1;
+    onProgress(done, freshEntries.length);
+  });
 
-  saveUploadedHashes(uploadedHashes);
-  if (entries.length > MAX_AUTO_UPLOAD_PER_SCAN) {
+  saveUploadedFingerprints(uploadedFingerprints);
+  if (freshEntries.length === 0 && entries.length > 0) {
+    logs.push({ name: "전체 확인", status: "skipped", message: "새로 백업할 파일이 없습니다." });
+  }
+  if (entries.length > uploaded + skipped) {
     logs.push({
-      name: "scan-limit",
+      name: "이어받기",
       status: "skipped",
-      message: `한 번에 ${MAX_AUTO_UPLOAD_PER_SCAN}개까지만 처리합니다. 다시 실행하면 다음 파일을 이어서 백업합니다.`,
+      message: `한 번에 ${MAX_AUTO_UPLOAD_PER_SCAN}개씩 처리합니다. 다시 접속하거나 지금 백업 실행을 누르면 이어서 처리합니다.`,
     });
   }
   return { uploaded, skipped, logs };
@@ -291,9 +320,25 @@ async function collectAudioFiles(handle: any, prefix = ""): Promise<AudioEntry[]
     const ext = name.toLowerCase().split(".").pop() ?? "";
     if (!ACCEPTED_EXTENSIONS.includes(ext as any)) continue;
     const file = await child.getFile();
-    files.push({ file, relativePath: path });
+    files.push({
+      file,
+      relativePath: path,
+      fingerprint: `${path}|${file.name}|${file.size}|${file.lastModified}`,
+    });
   }
   return files.sort((a, b) => b.file.lastModified - a.file.lastModified);
+}
+
+async function runPool<T>(items: T[], concurrency: number, worker: (item: T) => Promise<void>) {
+  let cursor = 0;
+  const runners = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (cursor < items.length) {
+      const item = items[cursor];
+      cursor += 1;
+      if (item) await worker(item);
+    }
+  });
+  await Promise.all(runners);
 }
 
 async function ensurePermission(handle: any) {
@@ -302,24 +347,16 @@ async function ensurePermission(handle: any) {
   return (await handle.requestPermission(options)) === "granted";
 }
 
-async function hashFile(file: File) {
-  const buffer = await file.arrayBuffer();
-  const digest = await crypto.subtle.digest("SHA-256", buffer);
-  return Array.from(new Uint8Array(digest))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-}
-
-function getUploadedHashes() {
+function getUploadedFingerprints() {
   try {
-    return new Set<string>(JSON.parse(localStorage.getItem(HASH_KEY) ?? "[]"));
+    return new Set<string>(JSON.parse(localStorage.getItem(UPLOADED_KEY) ?? "[]"));
   } catch {
     return new Set<string>();
   }
 }
 
-function saveUploadedHashes(hashes: Set<string>) {
-  localStorage.setItem(HASH_KEY, JSON.stringify(Array.from(hashes).slice(-5000)));
+function saveUploadedFingerprints(fingerprints: Set<string>) {
+  localStorage.setItem(UPLOADED_KEY, JSON.stringify(Array.from(fingerprints).slice(-10000)));
 }
 
 function openDb(): Promise<IDBDatabase> {
@@ -364,4 +401,3 @@ async function deleteSavedDirectoryHandle() {
   });
   db.close();
 }
-
