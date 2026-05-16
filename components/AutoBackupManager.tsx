@@ -1,24 +1,33 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
-import { CheckCircle2, FolderOpen, Loader2, RefreshCcw, ShieldCheck, Smartphone, XCircle } from "lucide-react";
+import { CheckCircle2, FolderOpen, Loader2, RefreshCcw, ShieldCheck, Smartphone, XCircle, Clock3, UploadCloud } from "lucide-react";
 import { uploadRecording } from "@/app/(app)/upload/actions";
-import { ACCEPTED_EXTENSIONS, validateAudioFile } from "@/lib/upload";
+import { ACCEPTED_EXTENSIONS, formatBytes, validateAudioFile } from "@/lib/upload";
 import { cn } from "@/lib/cn";
 
 const DB_NAME = "jamsa-auto-backup";
 const STORE_NAME = "handles";
 const HANDLE_KEY = "recordings-directory";
-const UPLOADED_KEY = "jamsa-uploaded-audio-fingerprints";
-const MAX_AUTO_UPLOAD_PER_SCAN = 12;
+const STATE_KEY = "jamsa-auto-backup-state-v2";
+const MAX_AUTO_UPLOAD_PER_RUN = 12;
 const MAX_PARALLEL_UPLOADS = 3;
 
-type BackupStatus = "unsupported" | "idle" | "ready" | "scanning" | "done" | "error";
+type BackupStatus = "unsupported" | "idle" | "ready" | "scanning" | "uploading" | "done" | "error";
+type JobStatus = "queued" | "uploading" | "uploaded" | "skipped" | "failed";
 
-interface BackupLog {
+interface PersistedJob {
+  fingerprint: string;
   name: string;
-  status: "uploaded" | "skipped" | "failed";
+  size: number;
+  modified: number;
+  status: JobStatus;
   message: string;
+  updatedAt: number;
+}
+
+interface BackupState {
+  jobs: Record<string, PersistedJob>;
 }
 
 interface AudioEntry {
@@ -27,11 +36,13 @@ interface AudioEntry {
   fingerprint: string;
 }
 
+const EMPTY_STATE: BackupState = { jobs: {} };
+
 export default function AutoBackupManager() {
   const [status, setStatus] = useState<BackupStatus>("idle");
-  const [message, setMessage] = useState("녹음 폴더를 한 번 지정하면 다음 접속부터 새 파일을 자동 백업합니다.");
-  const [logs, setLogs] = useState<BackupLog[]>([]);
-  const [progress, setProgress] = useState({ done: 0, total: 0 });
+  const [message, setMessage] = useState("녹음 폴더를 한 번 지정하면 다음 접속부터 실패한 파일과 새 파일만 이어서 백업합니다.");
+  const [state, setState] = useState<BackupState>(EMPTY_STATE);
+  const [currentFile, setCurrentFile] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
   const runningRef = useRef(false);
 
@@ -39,6 +50,34 @@ export default function AutoBackupManager() {
     () => typeof window !== "undefined" && "showDirectoryPicker" in window && "indexedDB" in window,
     []
   );
+
+  useEffect(() => {
+    setState(loadState());
+  }, []);
+
+  const stats = useMemo(() => {
+    const jobs = Object.values(state.jobs);
+    return {
+      total: jobs.length,
+      queued: jobs.filter((j) => j.status === "queued").length,
+      uploading: jobs.filter((j) => j.status === "uploading").length,
+      uploaded: jobs.filter((j) => j.status === "uploaded").length,
+      skipped: jobs.filter((j) => j.status === "skipped").length,
+      failed: jobs.filter((j) => j.status === "failed").length,
+    };
+  }, [state]);
+
+  const activeTotal = stats.queued + stats.uploading + stats.uploaded + stats.failed;
+  const activeDone = stats.uploaded + stats.failed;
+  const percent = activeTotal > 0 ? Math.round((activeDone / activeTotal) * 100) : 0;
+
+  const patchJobs = useCallback((patch: Record<string, PersistedJob>) => {
+    setState((prev) => {
+      const next = { jobs: { ...prev.jobs, ...patch } };
+      saveState(next);
+      return next;
+    });
+  }, []);
 
   const scanSavedFolder = useCallback(
     (silent = false) => {
@@ -51,6 +90,7 @@ export default function AutoBackupManager() {
 
       startTransition(async () => {
         runningRef.current = true;
+        setCurrentFile(null);
         try {
           const handle = await getSavedDirectoryHandle();
           if (!handle) {
@@ -67,17 +107,52 @@ export default function AutoBackupManager() {
           }
 
           setStatus("scanning");
-          setMessage("새 녹음파일을 빠르게 찾는 중입니다.");
-          setProgress({ done: 0, total: 0 });
+          setMessage("녹음 폴더를 스캔하고, 기존 완료 파일은 보존한 채 새 파일과 실패 파일만 선별합니다.");
+          const entries = await collectAudioFiles(handle);
+          const latestState = loadState();
+          const discovered: Record<string, PersistedJob> = {};
 
-          const result = await scanAndUpload(handle, (done, total) => {
-            setProgress({ done, total });
-            if (total > 0) setMessage(`자동 백업 중입니다. ${done}/${total}개 처리 완료`);
-          });
+          for (const entry of entries) {
+            const previous = latestState.jobs[entry.fingerprint];
+            if (previous?.status === "uploaded" || previous?.status === "skipped") continue;
+            discovered[entry.fingerprint] = {
+              fingerprint: entry.fingerprint,
+              name: entry.relativePath,
+              size: entry.file.size,
+              modified: entry.file.lastModified,
+              status: previous?.status === "failed" ? "queued" : previous?.status ?? "queued",
+              message: previous?.status === "failed" ? "이전 실패 파일 재시도 대기" : previous?.message ?? "업로드 대기",
+              updatedAt: Date.now(),
+            };
+          }
 
-          setLogs(result.logs);
+          if (Object.keys(discovered).length > 0) patchJobs(discovered);
+
+          const runnable = entries
+            .filter((entry) => {
+              const job = { ...latestState.jobs, ...discovered }[entry.fingerprint];
+              return job && (job.status === "queued" || job.status === "failed" || job.status === "uploading");
+            })
+            .slice(0, MAX_AUTO_UPLOAD_PER_RUN);
+
+          if (runnable.length === 0) {
+            setStatus("done");
+            setMessage("백업할 새 파일이나 실패 파일이 없습니다. 기존 백업 상태는 그대로 보관됩니다.");
+            return;
+          }
+
+          setStatus("uploading");
+          setMessage(`${runnable.length}개 파일을 이어서 백업합니다. 완료된 파일은 다시 올리지 않습니다.`);
+          await uploadEntries(runnable, patchJobs, setCurrentFile);
+
+          const remaining = countRemaining();
           setStatus("done");
-          setMessage(`자동 백업 완료: 새 파일 ${result.uploaded}개 업로드, ${result.skipped}개 건너뜀.`);
+          setCurrentFile(null);
+          setMessage(
+            remaining > 0
+              ? `이번 묶음 처리가 끝났습니다. 남은 파일 ${remaining}개는 다음 접속 또는 지금 백업 실행 때 이어서 처리합니다.`
+              : "자동 백업이 완료되었습니다. 완료 파일은 보관되고 다음부터 새 파일만 처리합니다."
+          );
         } catch (error) {
           setStatus("error");
           setMessage(error instanceof Error ? error.message : "자동 백업 중 오류가 발생했습니다.");
@@ -86,7 +161,7 @@ export default function AutoBackupManager() {
         }
       });
     },
-    [supported]
+    [patchJobs, supported]
   );
 
   useEffect(() => {
@@ -111,7 +186,7 @@ export default function AutoBackupManager() {
         }
         await saveDirectoryHandle(handle);
         setStatus("ready");
-        setMessage("녹음 폴더 권한이 저장되었습니다. 접속 시 자동 백업이 켜졌습니다.");
+        setMessage("녹음 폴더 권한이 저장되었습니다. 다음부터 앱 접속 시 자동 백업이 이어집니다.");
         scanSavedFolder(false);
       } catch (error) {
         setStatus("error");
@@ -123,13 +198,17 @@ export default function AutoBackupManager() {
   const clearSetup = () => {
     startTransition(async () => {
       await deleteSavedDirectoryHandle();
-      localStorage.removeItem(UPLOADED_KEY);
-      setLogs([]);
-      setProgress({ done: 0, total: 0 });
+      localStorage.removeItem(STATE_KEY);
+      setState(EMPTY_STATE);
+      setCurrentFile(null);
       setStatus("idle");
-      setMessage("자동 백업 설정을 초기화했습니다.");
+      setMessage("자동 백업 설정과 작업 이력을 초기화했습니다.");
     });
   };
+
+  const recentJobs = Object.values(state.jobs)
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, 18);
 
   return (
     <section className="rounded-2xl bg-paper border border-line overflow-hidden">
@@ -141,7 +220,7 @@ export default function AutoBackupManager() {
           <div>
             <h2 className="font-display text-[18px] font-bold">접속 시 자동 백업</h2>
             <p className="text-[12px] text-ink-mute mt-1">
-              앱에 들어오면 저장된 녹음 폴더에서 새 파일만 찾아 빠르게 업로드합니다.
+              중간에 앱이 꺼져도 작업 이력을 보관하고, 다음 접속 때 안 된 파일만 이어서 처리합니다.
             </p>
           </div>
         </div>
@@ -149,18 +228,35 @@ export default function AutoBackupManager() {
       </div>
 
       <div className="p-5 space-y-4">
-        <div className="rounded-xl bg-surface/60 border border-line-soft p-4 flex items-start gap-3">
-          <ShieldCheck size={17} className="text-olive mt-0.5 shrink-0" />
-          <div className="text-[13px] leading-6 text-ink-soft">
-            {message}
-            {progress.total > 0 && (
-              <div className="mt-3 h-2 rounded-full bg-line-soft overflow-hidden">
-                <div
-                  className="h-full bg-olive transition-all"
-                  style={{ width: `${Math.round((progress.done / progress.total) * 100)}%` }}
-                />
-              </div>
-            )}
+        <div className="rounded-xl bg-surface/60 border border-line-soft p-4">
+          <div className="flex items-start gap-3">
+            <ShieldCheck size={17} className="text-olive mt-0.5 shrink-0" />
+            <div className="text-[13px] leading-6 text-ink-soft flex-1">
+              {message}
+              {currentFile && <div className="mt-1 text-[11px] text-ink-mute truncate">현재 처리: {currentFile}</div>}
+            </div>
+          </div>
+
+          <div className="mt-4">
+            <div className="flex items-center justify-between text-[11px] text-ink-mute mb-1">
+              <span>진행률 {percent}%</span>
+              <span>
+                완료 {stats.uploaded} · 대기 {stats.queued} · 처리중 {stats.uploading} · 실패 {stats.failed} · 건너뜀 {stats.skipped}
+              </span>
+            </div>
+            <div className="h-3 rounded-full bg-line-soft overflow-hidden flex">
+              <div className="h-full bg-olive transition-all" style={{ width: `${activeTotal ? (stats.uploaded / activeTotal) * 100 : 0}%` }} />
+              <div className="h-full bg-accent/70 transition-all" style={{ width: `${activeTotal ? (stats.failed / activeTotal) * 100 : 0}%` }} />
+              <div className="h-full bg-gold/70 transition-all" style={{ width: `${activeTotal ? (stats.uploading / activeTotal) * 100 : 0}%` }} />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 mt-4">
+            <Stat label="총 파일" value={stats.total} />
+            <Stat label="업로드" value={stats.uploaded} />
+            <Stat label="대기" value={stats.queued} />
+            <Stat label="실패" value={stats.failed} />
+            <Stat label="건너뜀" value={stats.skipped} />
           </div>
         </div>
 
@@ -179,7 +275,7 @@ export default function AutoBackupManager() {
             className="px-4 py-2.5 rounded-xl bg-paper border border-line text-[13px] font-semibold flex items-center gap-2 disabled:opacity-50"
           >
             <RefreshCcw size={14} />
-            지금 백업 실행
+            안 된 파일 이어서 백업
           </button>
           <button
             onClick={clearSetup}
@@ -191,28 +287,16 @@ export default function AutoBackupManager() {
         </div>
 
         <div className="text-[11px] text-ink-mute leading-5">
-          속도 개선: 전체 파일 해시 계산 없이 경로, 파일명, 크기, 수정시간으로 중복을 판단합니다.
-          한 번에 최대 {MAX_AUTO_UPLOAD_PER_SCAN}개, 동시 {MAX_PARALLEL_UPLOADS}개씩 업로드합니다.
+          처리 중 종료되어도 완료 파일은 보존됩니다. 상태가 `queued`, `uploading`, `failed`인 파일만 다음 실행 때 다시 시도합니다.
+          한 번에 최대 {MAX_AUTO_UPLOAD_PER_RUN}개, 동시 {MAX_PARALLEL_UPLOADS}개씩 업로드합니다.
         </div>
 
-        {logs.length > 0 && (
+        {recentJobs.length > 0 && (
           <div className="rounded-xl border border-line overflow-hidden">
-            <div className="px-4 py-2.5 bg-cream/60 text-[12px] font-semibold">최근 자동 백업 결과</div>
-            <div className="divide-y divide-line-soft max-h-72 overflow-auto scroll-thin">
-              {logs.map((log, index) => (
-                <div key={`${log.name}_${index}`} className="px-4 py-3 flex items-start gap-2">
-                  {log.status === "uploaded" ? (
-                    <CheckCircle2 size={14} className="text-olive mt-0.5 shrink-0" />
-                  ) : log.status === "failed" ? (
-                    <XCircle size={14} className="text-accent mt-0.5 shrink-0" />
-                  ) : (
-                    <RefreshCcw size={14} className="text-ink-mute mt-0.5 shrink-0" />
-                  )}
-                  <div className="min-w-0">
-                    <div className="text-[12px] font-medium truncate">{log.name}</div>
-                    <div className="text-[11px] text-ink-mute">{log.message}</div>
-                  </div>
-                </div>
+            <div className="px-4 py-2.5 bg-cream/60 text-[12px] font-semibold">파일별 처리 과정</div>
+            <div className="divide-y divide-line-soft max-h-80 overflow-auto scroll-thin">
+              {recentJobs.map((job) => (
+                <JobRow key={job.fingerprint} job={job} />
               ))}
             </div>
           </div>
@@ -220,6 +304,53 @@ export default function AutoBackupManager() {
       </div>
     </section>
   );
+}
+
+function Stat({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="rounded-xl bg-paper border border-line-soft px-3 py-2">
+      <div className="text-[10px] text-ink-mute">{label}</div>
+      <div className="text-[18px] font-bold num">{value}</div>
+    </div>
+  );
+}
+
+function JobRow({ job }: { job: PersistedJob }) {
+  const icon =
+    job.status === "uploaded" ? (
+      <CheckCircle2 size={14} className="text-olive" />
+    ) : job.status === "failed" ? (
+      <XCircle size={14} className="text-accent" />
+    ) : job.status === "uploading" ? (
+      <UploadCloud size={14} className="text-gold" />
+    ) : (
+      <Clock3 size={14} className="text-ink-mute" />
+    );
+
+  return (
+    <div className="px-4 py-3 flex items-start gap-2">
+      <div className="mt-0.5 shrink-0">{icon}</div>
+      <div className="min-w-0 flex-1">
+        <div className="text-[12px] font-medium truncate">{job.name}</div>
+        <div className="text-[11px] text-ink-mute flex flex-wrap gap-x-2 gap-y-0.5">
+          <span>{statusLabel(job.status)}</span>
+          <span>{formatBytes(job.size)}</span>
+          <span>{job.message}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function statusLabel(status: JobStatus) {
+  const map: Record<JobStatus, string> = {
+    queued: "대기",
+    uploading: "업로드중",
+    uploaded: "완료",
+    skipped: "건너뜀",
+    failed: "실패",
+  };
+  return map[status];
 }
 
 function StatusBadge({ status, busy }: { status: BackupStatus; busy: boolean }) {
@@ -251,30 +382,20 @@ function StatusBadge({ status, busy }: { status: BackupStatus; busy: boolean }) 
   );
 }
 
-async function scanAndUpload(handle: any, onProgress: (done: number, total: number) => void) {
-  const uploadedFingerprints = getUploadedFingerprints();
-  const entries = await collectAudioFiles(handle);
-  const logs: BackupLog[] = [];
-  const freshEntries = entries
-    .filter((entry) => !uploadedFingerprints.has(entry.fingerprint))
-    .slice(0, MAX_AUTO_UPLOAD_PER_SCAN);
-
-  let uploaded = 0;
-  let skipped = entries.length - freshEntries.length;
-  let done = 0;
-  onProgress(done, freshEntries.length);
-
-  await runPool(freshEntries, MAX_PARALLEL_UPLOADS, async (entry) => {
-    const validation = validateAudioFile({
-      name: entry.file.name,
-      size: entry.file.size,
-      type: entry.file.type,
+async function uploadEntries(
+  entries: AudioEntry[],
+  patchJobs: (patch: Record<string, PersistedJob>) => void,
+  setCurrentFile: (name: string | null) => void
+) {
+  await runPool(entries, MAX_PARALLEL_UPLOADS, async (entry) => {
+    setCurrentFile(entry.relativePath);
+    patchJobs({
+      [entry.fingerprint]: makeJob(entry, "uploading", "서버로 업로드 중"),
     });
 
+    const validation = validateAudioFile({ name: entry.file.name, size: entry.file.size, type: entry.file.type });
     if (!validation.valid) {
-      logs.push({ name: entry.relativePath, status: "failed", message: validation.reason });
-      done += 1;
-      onProgress(done, freshEntries.length);
+      patchJobs({ [entry.fingerprint]: makeJob(entry, "failed", validation.reason) });
       return;
     }
 
@@ -283,30 +404,36 @@ async function scanAndUpload(handle: any, onProgress: (done: number, total: numb
     formData.append("source", "phone_backup");
     formData.append("title", entry.file.name.replace(/\.[^.]+$/, ""));
 
-    const result = await uploadRecording(formData);
-    if (result.ok) {
-      uploaded += 1;
-      uploadedFingerprints.add(entry.fingerprint);
-      logs.push({ name: entry.relativePath, status: "uploaded", message: "백업 및 STT 대기열 등록 완료" });
-    } else {
-      logs.push({ name: entry.relativePath, status: "failed", message: result.error });
+    try {
+      const result = await uploadRecording(formData);
+      if (result.ok) {
+        patchJobs({ [entry.fingerprint]: makeJob(entry, "uploaded", "백업 완료 · STT 대기열 등록") });
+      } else {
+        patchJobs({ [entry.fingerprint]: makeJob(entry, "failed", result.error) });
+      }
+    } catch (error) {
+      patchJobs({
+        [entry.fingerprint]: makeJob(entry, "failed", error instanceof Error ? error.message : "업로드 실패"),
+      });
     }
-    done += 1;
-    onProgress(done, freshEntries.length);
   });
+}
 
-  saveUploadedFingerprints(uploadedFingerprints);
-  if (freshEntries.length === 0 && entries.length > 0) {
-    logs.push({ name: "전체 확인", status: "skipped", message: "새로 백업할 파일이 없습니다." });
-  }
-  if (entries.length > uploaded + skipped) {
-    logs.push({
-      name: "이어받기",
-      status: "skipped",
-      message: `한 번에 ${MAX_AUTO_UPLOAD_PER_SCAN}개씩 처리합니다. 다시 접속하거나 지금 백업 실행을 누르면 이어서 처리합니다.`,
-    });
-  }
-  return { uploaded, skipped, logs };
+function makeJob(entry: AudioEntry, status: JobStatus, message: string): PersistedJob {
+  return {
+    fingerprint: entry.fingerprint,
+    name: entry.relativePath,
+    size: entry.file.size,
+    modified: entry.file.lastModified,
+    status,
+    message,
+    updatedAt: Date.now(),
+  };
+}
+
+function countRemaining() {
+  const jobs = Object.values(loadState().jobs);
+  return jobs.filter((job) => job.status === "queued" || job.status === "uploading" || job.status === "failed").length;
 }
 
 async function collectAudioFiles(handle: any, prefix = ""): Promise<AudioEntry[]> {
@@ -347,16 +474,21 @@ async function ensurePermission(handle: any) {
   return (await handle.requestPermission(options)) === "granted";
 }
 
-function getUploadedFingerprints() {
+function loadState(): BackupState {
   try {
-    return new Set<string>(JSON.parse(localStorage.getItem(UPLOADED_KEY) ?? "[]"));
+    const parsed = JSON.parse(localStorage.getItem(STATE_KEY) ?? "") as BackupState;
+    if (parsed && typeof parsed.jobs === "object") return parsed;
   } catch {
-    return new Set<string>();
+    return EMPTY_STATE;
   }
+  return EMPTY_STATE;
 }
 
-function saveUploadedFingerprints(fingerprints: Set<string>) {
-  localStorage.setItem(UPLOADED_KEY, JSON.stringify(Array.from(fingerprints).slice(-10000)));
+function saveState(state: BackupState) {
+  const jobs = Object.values(state.jobs)
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, 10000);
+  localStorage.setItem(STATE_KEY, JSON.stringify({ jobs: Object.fromEntries(jobs.map((job) => [job.fingerprint, job])) }));
 }
 
 function openDb(): Promise<IDBDatabase> {
