@@ -76,10 +76,10 @@ async function searchSupabase(p: SearchParams): Promise<SearchResult> {
     ) => Promise<{ data: SearchHit[] | null; error: unknown }>;
   }).rpc("search_recordings", {
     query: p.query?.trim() || null,
-    category: p.category || null,
-    risk: p.risk && p.risk !== "any" ? p.risk : null,
-    date_from: p.dateFrom || null,
-    date_to: p.dateTo || null,
+    p_category: p.category || null,
+    p_risk: p.risk && p.risk !== "any" ? p.risk : null,
+    p_date_from: p.dateFrom || null,
+    p_date_to: p.dateTo || null,
     result_limit: p.limit ?? 50,
   });
 

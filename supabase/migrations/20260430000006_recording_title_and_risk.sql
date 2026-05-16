@@ -77,12 +77,14 @@ create index recordings_text_search_idx
 -- 클라이언트는 이 id 들로 다시 detail 을 가져오거나 그대로 활용.
 -- ─────────────────────────────────────────────────────────
 
+drop function if exists public.search_recordings(text, text, text, timestamptz, timestamptz, int);
+
 create or replace function public.search_recordings(
   query        text default null,
-  category     text default null,
-  risk         text default null,
-  date_from    timestamptz default null,
-  date_to      timestamptz default null,
+  p_category   text default null,
+  p_risk       text default null,
+  p_date_from  timestamptz default null,
+  p_date_to    timestamptz default null,
   result_limit int default 50
 )
 returns table (
@@ -118,10 +120,10 @@ begin
     -- 1) 권한이 있는 recording 만 (RLS 가 자동 적용 — security invoker)
     select r.*
     from public.recordings r
-    where (category is null or r.category = category)
-      and (risk     is null or r.risk_level = risk)
-      and (date_from is null or r.recorded_at >= date_from)
-      and (date_to   is null or r.recorded_at <= date_to)
+    where (p_category is null or r.category = p_category)
+      and (p_risk     is null or r.risk_level = p_risk)
+      and (p_date_from is null or r.recorded_at >= p_date_from)
+      and (p_date_to   is null or r.recorded_at <= p_date_to)
   ),
   -- 2) 매칭 출처별로 candidate 를 모은다
   hits as (
