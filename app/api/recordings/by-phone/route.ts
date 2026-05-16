@@ -38,6 +38,14 @@ export async function GET(req: Request) {
     .limit(20);
 
   if (error) {
+    if (error.message.includes("Could not find the table")) {
+      return NextResponse.json({
+        phone: normalized,
+        items: [],
+        setupRequired: true,
+        error: error.message,
+      });
+    }
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
