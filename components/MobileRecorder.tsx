@@ -12,6 +12,8 @@ import {
   AlertCircle,
   ShieldAlert,
   XCircle,
+  PhoneIncoming,
+  History,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { formatDuration } from "@/lib/mock-data";
@@ -36,6 +38,30 @@ type RecState =
 interface ErrorInfo {
   title: string;
   description: string;
+}
+
+interface NativeCallEvent {
+  phone?: string;
+  direction?: "incoming" | "outgoing" | "missed" | string;
+  startedAt?: string;
+  status?: string;
+}
+
+interface PhoneHistoryItem {
+  id: string;
+  recorded_at: string;
+  title: string | null;
+  customer_name: string | null;
+  customer_phone: string | null;
+  status: string | null;
+  duration_sec: number | null;
+  excerpt: string | null;
+}
+
+declare global {
+  interface Window {
+    jamsaPhoneCallStarted?: (payload: NativeCallEvent) => void;
+  }
 }
 
 // ─────────────────────────────────────────────────────────
@@ -86,6 +112,9 @@ export default function MobileRecorder() {
     id?: string;
     mock?: boolean;
   } | null>(null);
+  const [nativeCall, setNativeCall] = useState<NativeCallEvent | null>(null);
+  const [phoneHistory, setPhoneHistory] = useState<PhoneHistoryItem[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -96,6 +125,24 @@ export default function MobileRecorder() {
   const rafRef = useRef<number | null>(null);
 
   const [isPending, startTransition] = useTransition();
+
+  const loadPhoneHistory = useCallback(async (phone: string) => {
+    const normalized = normalizePhone(phone);
+    if (!normalized) return;
+
+    setHistoryLoading(true);
+    try {
+      const res = await fetch(`/api/recordings/by-phone?phone=${encodeURIComponent(normalized)}`, {
+        cache: "no-store",
+      });
+      const json = (await res.json()) as { items?: PhoneHistoryItem[] };
+      setPhoneHistory(Array.isArray(json.items) ? json.items : []);
+    } catch {
+      setPhoneHistory([]);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, []);
 
   // ─── 초기 지원 여부 검사 ───────────────────────────────
   useEffect(() => {
@@ -112,6 +159,54 @@ export default function MobileRecorder() {
     }
     setState("idle");
   }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const applyIncomingCall = (payload: NativeCallEvent) => {
+      const phone = normalizePhone(payload.phone ?? "");
+      const next = {
+        ...payload,
+        phone: phone ?? payload.phone,
+        startedAt: payload.startedAt ?? new Date().toISOString(),
+        status: payload.status ?? "ringing",
+      };
+      setNativeCall(next);
+      if (phone) void loadPhoneHistory(phone);
+    };
+
+    window.jamsaPhoneCallStarted = applyIncomingCall;
+
+    const params = new URLSearchParams(window.location.search);
+    const initialPhone = params.get("phone");
+    if (initialPhone) {
+      applyIncomingCall({
+        phone: initialPhone,
+        direction: (params.get("direction") as NativeCallEvent["direction"]) ?? "incoming",
+        status: "ringing",
+      });
+    }
+
+    const onNativeCall = (event: Event) => {
+      applyIncomingCall((event as CustomEvent<NativeCallEvent>).detail ?? {});
+    };
+    const onMessage = (event: MessageEvent) => {
+      const data = event.data as { type?: string; payload?: NativeCallEvent } | string;
+      if (typeof data === "object" && data?.type === "jamsa:phone-call") {
+        applyIncomingCall(data.payload ?? {});
+      }
+    };
+
+    window.addEventListener("jamsa:phone-call", onNativeCall);
+    window.addEventListener("message", onMessage);
+    return () => {
+      window.removeEventListener("jamsa:phone-call", onNativeCall);
+      window.removeEventListener("message", onMessage);
+      if (window.jamsaPhoneCallStarted === applyIncomingCall) {
+        delete window.jamsaPhoneCallStarted;
+      }
+    };
+  }, [loadPhoneHistory]);
 
   // ─── 정리 ──────────────────────────────────────────────
   const cleanupMedia = useCallback(() => {
@@ -384,6 +479,13 @@ export default function MobileRecorder() {
 
   return (
     <Shell>
+      <NativeCallPanel
+        call={nativeCall}
+        history={phoneHistory}
+        loading={historyLoading}
+        onRefresh={() => nativeCall?.phone && void loadPhoneHistory(nativeCall.phone)}
+      />
+
       {/* 상태 배지 + 시간 */}
       <div className="flex items-center justify-between mb-5">
         <StatusBadge state={state} />
@@ -570,6 +672,97 @@ function Shell({ children }: { children: React.ReactNode }) {
   );
 }
 
+function NativeCallPanel({
+  call,
+  history,
+  loading,
+  onRefresh,
+}: {
+  call: NativeCallEvent | null;
+  history: PhoneHistoryItem[];
+  loading: boolean;
+  onRefresh: () => void;
+}) {
+  return (
+    <div className="mb-5 rounded-2xl border border-line bg-surface p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex items-start gap-3">
+          <div className="w-10 h-10 rounded-2xl bg-accent/10 text-accent flex items-center justify-center shrink-0">
+            <PhoneIncoming size={18} />
+          </div>
+          <div className="min-w-0">
+            <div className="text-[13px] font-bold">전화 자동녹음 연결</div>
+            <div className="text-[11px] text-ink-mute leading-relaxed">
+              Android 네이티브 앱이 수신번호를 보내면 이 화면에 통화내역이 즉시 표시됩니다.
+            </div>
+          </div>
+        </div>
+        <span className="px-2 py-1 rounded-full bg-gold/15 text-gold text-[10px] font-bold shrink-0">
+          앱 연동
+        </span>
+      </div>
+
+      {call?.phone ? (
+        <div className="mt-4 rounded-xl bg-paper border border-line-soft p-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="text-[10px] tracking-[0.18em] uppercase text-gold">
+                Incoming Call
+              </div>
+              <div className="mt-1 text-[18px] font-display font-bold num">{call.phone}</div>
+              <div className="text-[11px] text-ink-mute">
+                {call.direction === "outgoing" ? "발신" : call.direction === "missed" ? "부재중" : "수신"} ·{" "}
+                {call.status === "recording" ? "녹음 중" : "대기 중"}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={onRefresh}
+              className="px-3 py-2 rounded-xl bg-surface border border-line text-[11px] font-semibold flex items-center gap-1.5"
+            >
+              {loading ? <Loader2 size={13} className="animate-spin" /> : <History size={13} />}
+              내역
+            </button>
+          </div>
+
+          <div className="mt-3 space-y-2">
+            {loading ? (
+              <div className="text-[11px] text-ink-mute">같은 번호 통화내역을 불러오는 중입니다.</div>
+            ) : history.length > 0 ? (
+              history.slice(0, 4).map((item) => (
+                <a
+                  key={item.id}
+                  href={`/recordings/${item.id}`}
+                  className="block rounded-lg bg-surface border border-line-soft px-3 py-2"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-[12px] font-semibold truncate">
+                      {item.title || item.customer_name || item.customer_phone || "통화"}
+                    </div>
+                    <div className="text-[10px] text-ink-mute shrink-0">{formatShortDate(item.recorded_at)}</div>
+                  </div>
+                  <div className="text-[10px] text-ink-mute truncate">
+                    {item.excerpt || `${item.status ?? "처리 대기"} · ${formatDuration(item.duration_sec ?? 0)}`}
+                  </div>
+                </a>
+              ))
+            ) : (
+              <div className="text-[11px] text-ink-mute">
+                이 번호의 기존 통화내역이 아직 없습니다. 통화 종료 후 자동 업로드되면 누적됩니다.
+              </div>
+            )}
+          </div>
+        </div>
+      ) : (
+        <div className="mt-4 text-[11px] text-ink-mute leading-relaxed">
+          웹브라우저 단독으로는 실제 전화 수신 감지와 통화 자동녹음을 할 수 없습니다. Android 앱에서
+          전화 상태 권한과 녹음/파일 권한을 받아 이 화면으로 번호와 녹음파일을 보내야 합니다.
+        </div>
+      )}
+    </div>
+  );
+}
+
 function StatusBadge({ state }: { state: RecState }) {
   if (state === "recording") {
     return (
@@ -634,4 +827,25 @@ function ErrorPanel({
       </div>
     </div>
   );
+}
+
+function normalizePhone(value: string) {
+  let digits = value.replace(/\D/g, "");
+  if (digits.startsWith("82")) digits = `0${digits.slice(2)}`;
+  if (digits.length < 9 || digits.length > 11) return null;
+  if (digits.length === 11) return `${digits.slice(0, 3)}-${digits.slice(3, 7)}-${digits.slice(7)}`;
+  if (digits.length === 10 && digits.startsWith("02")) return `${digits.slice(0, 2)}-${digits.slice(2, 6)}-${digits.slice(6)}`;
+  if (digits.length === 10) return `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}`;
+  return digits;
+}
+
+function formatShortDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "-";
+  return new Intl.DateTimeFormat("ko-KR", {
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
 }

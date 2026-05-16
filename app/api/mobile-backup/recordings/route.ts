@@ -40,6 +40,9 @@ export async function POST(req: Request) {
   const recordedAt = String(formData.get("recordedAt") || "") || new Date().toISOString();
   const title = String(formData.get("title") || raw.name.replace(/\.[^.]+$/, "")).slice(0, 200);
   const ownerId = String(formData.get("ownerId") || process.env.MOBILE_BACKUP_OWNER_ID || "").trim() || null;
+  const customerPhone = normalizePhone(
+    String(formData.get("customerPhone") || formData.get("callerPhone") || formData.get("phone") || "")
+  );
 
   if (sha256) {
     const { data: existing } = await admin
@@ -94,6 +97,7 @@ export async function POST(req: Request) {
       audio_mime: contentType,
       audio_size_bytes: raw.size,
       audio_sha256: sha256,
+      customer_phone: customerPhone,
       status: "processing",
       source: "phone_backup",
       category,
@@ -102,6 +106,8 @@ export async function POST(req: Request) {
       metadata: {
         device_id: deviceId,
         original_path: originalPath,
+        caller_phone: customerPhone,
+        call_direction: String(formData.get("direction") || ""),
         last_modified: String(formData.get("lastModified") || ""),
         backup_client: String(formData.get("client") || "android-companion"),
       },
@@ -138,4 +144,14 @@ export async function POST(req: Request) {
   }
 
   return NextResponse.json({ ok: true, id: recording.id, queued: true });
+}
+
+function normalizePhone(value: string) {
+  let digits = value.replace(/\D/g, "");
+  if (digits.startsWith("82")) digits = `0${digits.slice(2)}`;
+  if (digits.length < 9 || digits.length > 11) return null;
+  if (digits.length === 11) return `${digits.slice(0, 3)}-${digits.slice(3, 7)}-${digits.slice(7)}`;
+  if (digits.length === 10 && digits.startsWith("02")) return `${digits.slice(0, 2)}-${digits.slice(2, 6)}-${digits.slice(6)}`;
+  if (digits.length === 10) return `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}`;
+  return digits;
 }
