@@ -3,7 +3,7 @@ import SearchResults from "@/components/SearchResults";
 import {
   searchRecordings,
   fetchFilterOptions,
-} from "@/lib/recordings-search";
+} from "@/lib/recordings-search-resilient";
 import type { RiskLevel } from "@/lib/types";
 
 // 검색 결과는 자주 바뀌므로 캐시 비활성화
