@@ -11,6 +11,7 @@ import {
   createSupabaseAdminClient,
   isUsingSupabaseServer,
 } from "@/lib/supabase/server";
+import { getExtension, STORAGE_BUCKET } from "@/lib/upload";
 
 export { fetchFilterOptions };
 
@@ -22,6 +23,10 @@ export async function searchRecordings(params: SearchParams): Promise<SearchResu
   }
 
   const table = await searchRecordingsTable(params);
+  if (table.total === 0) {
+    await recoverStorageBackups();
+    return searchRecordingsTable(params);
+  }
   return table.total > 0 ? table : primary;
 }
 
@@ -80,4 +85,97 @@ async function searchRecordingsTable(p: SearchParams): Promise<SearchResult> {
   }));
 
   return { hits, total: hits.length, source: "supabase" };
+}
+
+async function recoverStorageBackups() {
+  const supabase = createSupabaseAdminClient();
+  const files = await listBackupStorageFiles(supabase);
+  if (files.length === 0) return;
+
+  const paths = files.map((file) => file.path);
+  const { data: existing, error: existingError } = await supabase
+    .from("recordings")
+    .select("audio_path")
+    .in("audio_path", paths);
+
+  if (existingError) {
+    console.error("[search] storage recovery duplicate check failed:", existingError);
+    return;
+  }
+
+  const seen = new Set((existing ?? []).map((row: any) => row.audio_path));
+  const rows = files
+    .filter((file) => !seen.has(file.path))
+    .map((file) => {
+      const filename = file.path.split("/").pop() || file.path;
+      const ext = getExtension(filename);
+      return {
+        recorded_at: file.createdAt,
+        title: filename.replace(/\.[^.]+$/, ""),
+        duration_sec: 0,
+        audio_path: file.path,
+        audio_mime: ext ? `audio/${ext}` : "audio/mpeg",
+        audio_size_bytes: file.size,
+        status: "processing",
+        source: "phone_backup",
+        category: "통화녹음",
+        tags: ["통화녹음", "폰백업"],
+        metadata: {
+          recovered_from_storage: true,
+          original_filename: filename,
+        },
+      };
+    });
+
+  if (rows.length === 0) return;
+
+  const { error } = await supabase.from("recordings").insert(rows);
+  if (error) {
+    console.error("[search] storage recovery insert failed:", error);
+  }
+}
+
+async function listBackupStorageFiles(supabase: ReturnType<typeof createSupabaseAdminClient>) {
+  const roots = ["phone-backups", "mobile-backups"];
+  const out: { path: string; size: number | null; createdAt: string }[] = [];
+
+  for (const root of roots) {
+    await walkStoragePath(supabase, root, out, 0);
+  }
+
+  return out.slice(0, 300);
+}
+
+async function walkStoragePath(
+  supabase: ReturnType<typeof createSupabaseAdminClient>,
+  prefix: string,
+  out: { path: string; size: number | null; createdAt: string }[],
+  depth: number
+) {
+  if (depth > 3 || out.length >= 300) return;
+
+  const { data, error } = await supabase.storage
+    .from(STORAGE_BUCKET)
+    .list(prefix, {
+      limit: 100,
+      sortBy: { column: "created_at", order: "desc" },
+    });
+
+  if (error) {
+    console.error("[search] storage recovery list failed:", prefix, error);
+    return;
+  }
+
+  for (const item of data ?? []) {
+    const path = `${prefix}/${item.name}`;
+    if ((item as any).metadata) {
+      out.push({
+        path,
+        size: typeof item.metadata?.size === "number" ? item.metadata.size : null,
+        createdAt: item.created_at || item.updated_at || new Date().toISOString(),
+      });
+      continue;
+    }
+    await walkStoragePath(supabase, path, out, depth + 1);
+  }
 }
