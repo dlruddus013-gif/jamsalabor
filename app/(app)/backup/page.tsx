@@ -1,5 +1,4 @@
 import AutoBackupManager from "@/components/AutoBackupManager";
-import ServerBackupRecordings from "@/components/ServerBackupRecordings";
 import UploadDropzone from "@/components/UploadDropzone";
 
 export default function BackupPage() {
@@ -16,8 +15,6 @@ export default function BackupPage() {
       </div>
 
       <AutoBackupManager />
-
-      <ServerBackupRecordings />
 
       <UploadDropzone defaultSource="phone_backup" autoTitleFromFilename />
 
