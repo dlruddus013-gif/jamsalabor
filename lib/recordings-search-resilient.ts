@@ -7,11 +7,12 @@ import {
   type SearchParams,
   type SearchResult,
 } from "@/lib/recordings-search";
+import { CALL_RECORDING_CATEGORY } from "@/lib/recording-category";
 import {
   createSupabaseAdminClient,
   isUsingSupabaseServer,
 } from "@/lib/supabase/server";
-import { getExtension, STORAGE_BUCKET } from "@/lib/upload";
+import { ACCEPTED_EXTENSIONS, getExtension, STORAGE_BUCKET } from "@/lib/upload";
 
 export { fetchFilterOptions };
 
@@ -92,7 +93,8 @@ async function recoverStorageBackups() {
   const files = await listBackupStorageFiles(supabase);
   if (files.length === 0) return;
 
-  const paths = files.map((file) => file.path);
+  const uniqueFiles = [...new Map(files.map((file) => [file.path, file])).values()];
+  const paths = uniqueFiles.map((file) => file.path);
   const { data: existing, error: existingError } = await supabase
     .from("recordings")
     .select("audio_path")
@@ -104,7 +106,7 @@ async function recoverStorageBackups() {
   }
 
   const seen = new Set((existing ?? []).map((row: any) => row.audio_path));
-  const rows = files
+  const rows = uniqueFiles
     .filter((file) => !seen.has(file.path))
     .map((file) => {
       const filename = file.path.split("/").pop() || file.path;
@@ -118,8 +120,8 @@ async function recoverStorageBackups() {
         audio_size_bytes: file.size,
         status: "processing",
         source: "phone_backup",
-        category: "통화녹음",
-        tags: ["통화녹음", "폰백업"],
+        category: CALL_RECORDING_CATEGORY,
+        tags: [CALL_RECORDING_CATEGORY, "backup"],
         metadata: {
           recovered_from_storage: true,
           original_filename: filename,
@@ -136,11 +138,12 @@ async function recoverStorageBackups() {
 }
 
 async function listBackupStorageFiles(supabase: ReturnType<typeof createSupabaseAdminClient>) {
-  const roots = ["phone-backups", "mobile-backups"];
+  const roots = ["", "phone-backups", "mobile-backups"];
   const out: { path: string; size: number | null; createdAt: string }[] = [];
+  const visited = new Set<string>();
 
   for (const root of roots) {
-    await walkStoragePath(supabase, root, out, 0);
+    await walkStoragePath(supabase, root, out, visited, 0);
   }
 
   return out.slice(0, 300);
@@ -150,9 +153,11 @@ async function walkStoragePath(
   supabase: ReturnType<typeof createSupabaseAdminClient>,
   prefix: string,
   out: { path: string; size: number | null; createdAt: string }[],
+  visited: Set<string>,
   depth: number
 ) {
-  if (depth > 3 || out.length >= 300) return;
+  if (depth > 3 || out.length >= 300 || visited.has(prefix)) return;
+  visited.add(prefix);
 
   const { data, error } = await supabase.storage
     .from(STORAGE_BUCKET)
@@ -167,8 +172,9 @@ async function walkStoragePath(
   }
 
   for (const item of data ?? []) {
-    const path = `${prefix}/${item.name}`;
-    if ((item as any).metadata) {
+    const path = prefix ? `${prefix}/${item.name}` : item.name;
+    const ext = getExtension(item.name);
+    if ((item as any).metadata && ACCEPTED_EXTENSIONS.includes(ext as any)) {
       out.push({
         path,
         size: typeof item.metadata?.size === "number" ? item.metadata.size : null,
@@ -176,6 +182,6 @@ async function walkStoragePath(
       });
       continue;
     }
-    await walkStoragePath(supabase, path, out, depth + 1);
+    await walkStoragePath(supabase, path, out, visited, depth + 1);
   }
 }
