@@ -27,7 +27,7 @@ import type { Sentiment } from "@/lib/types";
 
 // ─────────────────────────────────────────────────────────
 // 매칭 출처 칩
-// ─────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────
 
 const MATCH_LABEL: Record<MatchedIn, { label: string; icon: typeof FileText }> = {
   title:      { label: "제목 일치",       icon: Tag },
@@ -36,7 +36,7 @@ const MATCH_LABEL: Record<MatchedIn, { label: string; icon: typeof FileText }> =
   transcript: { label: "전사 일치",       icon: FileText },
 };
 
-// ─────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────
 // 감정 아이콘
 // ─────────────────────────────────────────────────────────
 
@@ -358,12 +358,13 @@ function loadBackupStateHits(): SearchHit[] {
           modified: number;
           status: string;
           message: string;
+          recordingId?: string;
         }
       >;
     };
     const jobs = Object.values(parsed.jobs ?? {});
     return jobs
-      .filter((job) => job.status === "uploaded" || job.status === "converting")
+      .filter((job) => job.status === "uploaded" || job.status === "converting" || !!job.recordingId)
       .slice(0, 5000)
       .map((job) => {
         const title = job.name.split("/").pop()?.replace(/\.[^.]+$/, "") || job.name;
@@ -371,7 +372,7 @@ function loadBackupStateHits(): SearchHit[] {
           ? new Date(job.modified).toISOString()
           : new Date().toISOString();
         return {
-          id: `local_backup:${job.fingerprint}`,
+          id: job.recordingId || `local_backup:${job.fingerprint}`,
           recorded_at: recordedAt,
           title,
           customer_name: null,
