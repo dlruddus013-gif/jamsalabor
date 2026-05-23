@@ -20,6 +20,16 @@ type IntegrationStatus = {
     search: ServiceStatus;
     speech: ServiceStatus;
   };
+  google: {
+    connected: boolean;
+    search: ServiceStatus;
+  };
+  ai: {
+    connected: boolean;
+    openai: ServiceStatus;
+    anthropic: ServiceStatus;
+  };
+  sms: ServiceStatus;
   okpos: ServiceStatus & {
     endpoint?: string;
     storeId?: string;
@@ -81,6 +91,23 @@ export default function IntegrationStatusPanel() {
             ]}
           />
           <IntegrationCard
+            icon="G"
+            title="Google"
+            connected={Boolean(data?.google.connected)}
+            loading={loading && !data}
+            lines={[data?.google.search.message ?? "Google Custom Search 확인 중"]}
+          />
+          <IntegrationCard
+            icon="AI"
+            title="ChatGPT · Claude"
+            connected={Boolean(data?.ai.connected)}
+            loading={loading && !data}
+            lines={[
+              data?.ai.openai.message ?? "OpenAI 확인 중",
+              data?.ai.anthropic.message ?? "Claude 확인 중",
+            ]}
+          />
+          <IntegrationCard
             icon="POS"
             title="OKPOS"
             connected={Boolean(data?.okpos.connected)}
@@ -89,6 +116,13 @@ export default function IntegrationStatusPanel() {
               data?.okpos.message ?? "OKPOS API 확인 중",
               data?.okpos.storeId ? `매장 ${data.okpos.storeId}` : "매장 코드 대기",
             ]}
+          />
+          <IntegrationCard
+            icon="SMS"
+            title="문자 · 공유"
+            connected={Boolean(data?.sms.connected)}
+            loading={loading && !data}
+            lines={[data?.sms.message ?? "문자 API 확인 중", "브라우저 공유/복사는 항상 사용 가능"]}
           />
         </div>
       )}

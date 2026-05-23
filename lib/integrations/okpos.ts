@@ -8,6 +8,16 @@ export interface OkposConnectionStatus {
   checkedAt: string;
 }
 
+export interface OkposPurchase {
+  purchasedAt: string | null;
+  itemName: string;
+  quantity?: number | null;
+  amount?: number | null;
+  place?: string | null;
+  channel?: string | null;
+  receiptNo?: string | null;
+}
+
 function trimTrailingSlash(value: string) {
   return value.replace(/\/+$/, "");
 }
@@ -107,4 +117,81 @@ export async function checkOkposConnection(): Promise<OkposConnectionStatus> {
       checkedAt,
     };
   }
+}
+
+export async function fetchOkposPurchasesByPhone(
+  phone: string
+): Promise<OkposPurchase[]> {
+  const config = getOkposConfig();
+  if (!config.baseUrl || !config.apiKey || !phone.trim()) return [];
+
+  const purchasesPath = process.env.OKPOS_PURCHASES_PATH ?? "/purchases";
+  const url = new URL(`${config.baseUrl}${purchasesPath.startsWith("/") ? purchasesPath : `/${purchasesPath}`}`);
+  url.searchParams.set("phone", phone.replace(/\D/g, ""));
+  if (config.storeId) url.searchParams.set("storeId", config.storeId);
+
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+    "X-API-Key": config.apiKey,
+  };
+  if (config.authHeader.toLowerCase() === "authorization") {
+    headers.Authorization = `Bearer ${config.apiKey}`;
+  } else {
+    headers[config.authHeader] = config.apiKey;
+  }
+  if (config.storeId) {
+    headers["X-OKPOS-Store-Id"] = config.storeId;
+    headers["X-OKPOS-Shop-Code"] = config.storeId;
+  }
+
+  const res = await fetch(url, {
+    method: "GET",
+    headers,
+    cache: "no-store",
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!res.ok) {
+    throw new Error(`OKPOS purchases failed: ${res.status} ${await res.text()}`);
+  }
+
+  const data = (await res.json()) as {
+    items?: unknown[];
+    purchases?: unknown[];
+    data?: unknown[];
+  };
+  const rows = data.items ?? data.purchases ?? data.data ?? [];
+  return rows.map(normalizePurchase).filter((item) => item.itemName).slice(0, 20);
+}
+
+function normalizePurchase(row: unknown): OkposPurchase {
+  const value = row && typeof row === "object" ? (row as Record<string, unknown>) : {};
+  const itemName =
+    stringValue(value.itemName) ||
+    stringValue(value.productName) ||
+    stringValue(value.name) ||
+    stringValue(value.menuName) ||
+    "구매 항목";
+  return {
+    purchasedAt:
+      stringValue(value.purchasedAt) ||
+      stringValue(value.saleDateTime) ||
+      stringValue(value.soldAt) ||
+      stringValue(value.date) ||
+      null,
+    itemName,
+    quantity: numberValue(value.quantity ?? value.qty),
+    amount: numberValue(value.amount ?? value.totalAmount ?? value.price),
+    place: stringValue(value.place) || stringValue(value.storeName) || stringValue(value.location) || null,
+    channel: stringValue(value.channel) || stringValue(value.paymentMethod) || null,
+    receiptNo: stringValue(value.receiptNo) || stringValue(value.receiptId) || stringValue(value.orderNo) || null,
+  };
+}
+
+function stringValue(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function numberValue(value: unknown) {
+  const n = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(n) ? n : null;
 }

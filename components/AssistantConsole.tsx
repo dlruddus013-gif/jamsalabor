@@ -21,6 +21,7 @@ import {
   Loader2,
   MessageSquareText,
   Search,
+  Share2,
   Sparkles,
   Trash2,
 } from "lucide-react";
@@ -32,17 +33,36 @@ interface SearchResult {
   source: string;
 }
 
+interface PurchaseResult {
+  purchasedAt: string | null;
+  itemName: string;
+  amount?: number | null;
+  place?: string | null;
+  channel?: string | null;
+}
+
 interface AnswerResult {
   provider: string;
   answer: string;
   suggestedFollowUps: string[];
   searchResults: SearchResult[];
+  customerProfile?: string;
+  dailySummary?: string[];
+  requestedActions?: string[];
+  resolutionPlan?: string[];
+  informationToSend?: string[];
+  smsDraft?: string;
+  confidence?: number;
+  selectedReason?: string;
+  purchases?: PurchaseResult[];
   error?: string;
 }
 
 interface AssistantLog {
   id: string;
   createdAt: string;
+  customerName: string;
+  customerPhone: string;
   question: string;
   transcript: string;
   answer: string;
@@ -56,7 +76,7 @@ interface AssistantLog {
 
 type PeriodKey = "7d" | "30d" | "90d" | "all";
 
-const LOG_KEY = "jamsa-assistant-answer-logs-v1";
+const LOG_KEY = "jamsa-assistant-answer-logs-v2";
 const PERIODS: { key: PeriodKey; label: string; days: number | null }[] = [
   { key: "7d", label: "7일", days: 7 },
   { key: "30d", label: "30일", days: 30 },
@@ -91,6 +111,8 @@ const ANSWER_TYPES = [
 ];
 
 export default function AssistantConsole() {
+  const [customerName, setCustomerName] = useState("");
+  const [customerPhone, setCustomerPhone] = useState("");
   const [question, setQuestion] = useState("");
   const [transcript, setTranscript] = useState("");
   const [result, setResult] = useState<AnswerResult | null>(null);
@@ -119,13 +141,13 @@ export default function AssistantConsole() {
       const res = await fetch("/api/assistant/answer", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question, transcript }),
+        body: JSON.stringify({ question, transcript, customerName, customerPhone }),
       });
       const next = (await res.json()) as AnswerResult;
       setResult(next);
 
       if (!next.error) {
-        const log = createLog({ question, transcript, result: next });
+        const log = createLog({ question, transcript, customerName, customerPhone, result: next });
         const saved = saveLog(log);
         setLogs(saved);
       }
@@ -146,9 +168,24 @@ export default function AssistantConsole() {
               <Bot size={17} />
             </div>
             <div>
-              <h2 className="font-display text-[17px] font-bold">자동 답변 생성</h2>
-              <p className="text-[12px] text-ink-mute">네이버 검색 근거와 AI를 함께 사용합니다.</p>
+              <h2 className="font-display text-[17px] font-bold">고객별 자동 답변</h2>
+              <p className="text-[12px] text-ink-mute">Google · NAVER · ChatGPT · Claude · POS 내역을 함께 봅니다.</p>
             </div>
+          </div>
+
+          <div className="grid gap-2 sm:grid-cols-2 mb-3">
+            <input
+              value={customerName}
+              onChange={(e) => setCustomerName(e.target.value)}
+              className="h-10 rounded-xl border border-line bg-cream/40 px-3 text-[13px] outline-none focus:border-accent"
+              placeholder="고객명"
+            />
+            <input
+              value={customerPhone}
+              onChange={(e) => setCustomerPhone(e.target.value)}
+              className="h-10 rounded-xl border border-line bg-cream/40 px-3 text-[13px] outline-none focus:border-accent"
+              placeholder="전화번호"
+            />
           </div>
 
           <label className="block text-[12px] font-semibold mb-1">고객 질문</label>
@@ -156,7 +193,7 @@ export default function AssistantConsole() {
             value={question}
             onChange={(e) => setQuestion(e.target.value)}
             className="w-full min-h-28 rounded-xl border border-line bg-cream/40 p-3 text-[13px] outline-none focus:border-accent"
-            placeholder="예: 잠사박물관 단체 관람 식사 포함 가능할까요?"
+            placeholder="예: 지난번 구매한 체험권으로 오늘도 이용 가능한가요?"
           />
 
           <label className="block text-[12px] font-semibold mt-4 mb-1">통화 맥락 또는 STT 일부</label>
@@ -164,7 +201,7 @@ export default function AssistantConsole() {
             value={transcript}
             onChange={(e) => setTranscript(e.target.value)}
             className="w-full min-h-36 rounded-xl border border-line bg-cream/40 p-3 text-[13px] outline-none focus:border-accent"
-            placeholder="고객이 물어본 내용을 붙여넣으면 답변 정확도가 올라갑니다."
+            placeholder="고객 요청, 이전 안내, 통화 내용 일부를 붙여넣으세요."
           />
 
           <button
@@ -173,14 +210,14 @@ export default function AssistantConsole() {
             className="mt-4 w-full rounded-xl bg-ink text-cream py-3 text-[13px] font-bold flex items-center justify-center gap-2 disabled:opacity-50"
           >
             {isPending ? <Loader2 size={15} className="animate-spin" /> : <Sparkles size={15} />}
-            네이버 검색 후 AI 답변 생성
+            고객 분석 후 최적 답변 생성
           </button>
         </section>
 
         <section className="rounded-2xl bg-paper border border-line p-5 min-h-[420px]">
           {!result && (
             <div className="h-full flex items-center justify-center text-center text-ink-mute text-[13px]">
-              질문을 입력하면 답변 초안과 네이버 검색 근거가 표시됩니다.
+              질문을 입력하면 고객 성향, 구매 조회, 해결방안, 문자안이 표시됩니다.
             </div>
           )}
 
@@ -195,38 +232,68 @@ export default function AssistantConsole() {
               <div>
                 <div className="text-[11px] tracking-[0.25em] uppercase text-gold mb-2">
                   AI Answer · {result.provider}
+                  {typeof result.confidence === "number" && (
+                    <span className="ml-2 text-ink-mute tracking-normal">
+                      신뢰도 {Math.round(result.confidence * 100)}%
+                    </span>
+                  )}
                 </div>
                 <div className="whitespace-pre-wrap rounded-xl bg-cream/50 border border-line p-4 text-[14px] leading-7">
                   {result.answer}
                 </div>
               </div>
 
-              {result.suggestedFollowUps?.length > 0 && (
+              <div className="grid gap-2 md:grid-cols-2">
+                <InfoBox title="고객 성향" items={[result.customerProfile ?? "분석 대기"]} />
+                <InfoBox title="일별 요약" items={result.dailySummary ?? []} />
+                <InfoBox title="요청사항" items={result.requestedActions ?? []} />
+                <InfoBox title="해결방안" items={result.resolutionPlan ?? []} />
+                <InfoBox title="정보전달" items={result.informationToSend ?? []} />
+                <InfoBox title="문자안" items={[result.smsDraft ?? ""]} />
+              </div>
+
+              {result.purchases && result.purchases.length > 0 && (
                 <div>
-                  <h3 className="text-[12px] font-semibold mb-2">후속 확인</h3>
+                  <h3 className="text-[12px] font-semibold mb-2">POS 구매/방문 조회</h3>
                   <div className="space-y-1.5">
-                    {result.suggestedFollowUps.map((item, index) => (
+                    {result.purchases.map((item, index) => (
                       <div key={index} className="text-[12px] rounded-lg bg-surface px-3 py-2">
-                        {item}
+                        {item.purchasedAt ?? "일시 미상"} · {item.itemName}
+                        {item.amount ? ` · ${item.amount.toLocaleString()}원` : ""}
+                        {item.place ? ` · ${item.place}` : ""}
+                        {item.channel ? ` · ${item.channel}` : ""}
                       </div>
                     ))}
                   </div>
                 </div>
               )}
 
+              <div className="flex flex-wrap gap-2">
+                <button type="button" onClick={() => copySummary(result)} className="px-3 py-2 rounded-lg border border-line bg-cream text-[12px] font-semibold">
+                  요약 복사
+                </button>
+                <button type="button" onClick={() => shareSummary(result)} className="px-3 py-2 rounded-lg border border-line bg-cream text-[12px] font-semibold flex items-center gap-1">
+                  <Share2 size={13} />
+                  공유
+                </button>
+                {customerPhone && (
+                  <a href={`sms:${customerPhone.replace(/\D/g, "")}?body=${encodeURIComponent(result.smsDraft ?? result.answer)}`} className="px-3 py-2 rounded-lg border border-line bg-cream text-[12px] font-semibold">
+                    문자 보내기
+                  </a>
+                )}
+              </div>
+
+              {result.suggestedFollowUps?.length > 0 && (
+                <InfoBox title="후속 확인" items={result.suggestedFollowUps} />
+              )}
+
               <div>
                 <h3 className="text-[12px] font-semibold mb-2 flex items-center gap-1">
-                  <Search size={13} /> 네이버 검색 근거
+                  <Search size={13} /> 웹 검색 근거
                 </h3>
                 <div className="space-y-2 max-h-72 overflow-auto scroll-thin">
                   {result.searchResults?.map((item, index) => (
-                    <a
-                      key={`${item.link}_${index}`}
-                      href={item.link}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="block rounded-xl border border-line p-3 hover:bg-surface/60"
-                    >
+                    <a key={`${item.link}_${index}`} href={item.link} target="_blank" rel="noreferrer" className="block rounded-xl border border-line p-3 hover:bg-surface/60">
                       <div className="text-[12px] font-semibold">{item.title}</div>
                       <div className="text-[11px] text-ink-mute mt-1 line-clamp-2">{item.description}</div>
                       <div className="text-[10px] text-sky mt-1">{item.source}</div>
@@ -243,40 +310,23 @@ export default function AssistantConsole() {
         <div className="p-5 border-b border-line flex flex-wrap items-center justify-between gap-3">
           <div>
             <div className="text-[11px] tracking-[0.25em] uppercase text-gold mb-1">Answer Analytics</div>
-            <h2 className="font-display text-[19px] font-bold">자동답변 통계 대시보드</h2>
+            <h2 className="font-display text-[19px] font-bold">고객 질문 분석 대시보드</h2>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <select
-              value={facilityFilter}
-              onChange={(e) => setFacilityFilter(e.target.value)}
-              className="h-9 rounded-lg border border-line bg-cream px-3 text-[12px] outline-none"
-            >
+            <select value={facilityFilter} onChange={(e) => setFacilityFilter(e.target.value)} className="h-9 rounded-lg border border-line bg-cream px-3 text-[12px] outline-none">
               <option value="all">전체 시설</option>
               {facilityOptions.map((facility) => (
-                <option key={facility} value={facility}>
-                  {facility}
-                </option>
+                <option key={facility} value={facility}>{facility}</option>
               ))}
             </select>
             <div className="flex rounded-lg border border-line bg-cream p-0.5">
               {PERIODS.map((item) => (
-                <button
-                  key={item.key}
-                  onClick={() => setPeriod(item.key)}
-                  className={`h-8 px-3 rounded-md text-[12px] font-semibold ${
-                    period === item.key ? "bg-ink text-cream" : "text-ink-soft hover:bg-surface"
-                  }`}
-                >
+                <button key={item.key} onClick={() => setPeriod(item.key)} className={`h-8 px-3 rounded-md text-[12px] font-semibold ${period === item.key ? "bg-ink text-cream" : "text-ink-soft hover:bg-surface"}`}>
                   {item.label}
                 </button>
               ))}
             </div>
-            <button
-              onClick={clearLogs}
-              disabled={logs.length === 0}
-              className="h-9 w-9 rounded-lg border border-line bg-cream flex items-center justify-center disabled:opacity-40"
-              title="통계 초기화"
-            >
+            <button onClick={clearLogs} disabled={logs.length === 0} className="h-9 w-9 rounded-lg border border-line bg-cream flex items-center justify-center disabled:opacity-40" title="통계 초기화">
               <Trash2 size={14} />
             </button>
           </div>
@@ -292,22 +342,14 @@ export default function AssistantConsole() {
           </div>
 
           <div className="grid gap-4 xl:grid-cols-2">
-            <ChartPanel title="시설별 질문" icon={Building2}>
-              <BarViz data={stats.facilitySeries} color="#b98938" />
-            </ChartPanel>
-            <ChartPanel title="질문별 분포" icon={HelpCircle}>
-              <BarViz data={stats.questionSeries} color="#4f6f52" />
-            </ChartPanel>
-            <ChartPanel title="답변별 분포" icon={MessageSquareText}>
-              <BarViz data={stats.answerSeries} color="#b94d32" />
-            </ChartPanel>
-            <ChartPanel title="기간별 추이" icon={CalendarDays}>
-              <LineViz data={stats.periodSeries} />
-            </ChartPanel>
+            <ChartPanel title="시설별 질문" icon={Building2}><BarViz data={stats.facilitySeries} color="#b98938" /></ChartPanel>
+            <ChartPanel title="질문별 분포" icon={HelpCircle}><BarViz data={stats.questionSeries} color="#4f6f52" /></ChartPanel>
+            <ChartPanel title="답변별 분포" icon={MessageSquareText}><BarViz data={stats.answerSeries} color="#b94d32" /></ChartPanel>
+            <ChartPanel title="기간별 추이" icon={CalendarDays}><LineViz data={stats.periodSeries} /></ChartPanel>
           </div>
 
           <div className="rounded-xl border border-line overflow-hidden">
-            <div className="px-4 py-3 bg-cream/60 text-[12px] font-semibold">최근 질문/답변 이력</div>
+            <div className="px-4 py-3 bg-cream/60 text-[12px] font-semibold">최근 고객 질문/답변 이력</div>
             {filteredLogs.length === 0 ? (
               <div className="p-6 text-center text-[13px] text-ink-mute">아직 집계할 답변 이력이 없습니다.</div>
             ) : (
@@ -315,7 +357,7 @@ export default function AssistantConsole() {
                 {filteredLogs.slice(0, 12).map((log) => (
                   <div key={log.id} className="px-4 py-3 grid gap-2 md:grid-cols-[1fr_120px_120px_90px]">
                     <div className="min-w-0">
-                      <div className="text-[12px] font-semibold truncate">{log.question}</div>
+                      <div className="text-[12px] font-semibold truncate">{log.customerPhone || log.customerName || log.question}</div>
                       <div className="text-[11px] text-ink-mute truncate">{log.answer}</div>
                     </div>
                     <Badge>{log.facility}</Badge>
@@ -332,45 +374,25 @@ export default function AssistantConsole() {
   );
 }
 
-function Metric({
-  icon: Icon,
-  label,
-  value,
-}: {
-  icon: typeof HelpCircle;
-  label: string;
-  value: number;
-}) {
+function Metric({ icon: Icon, label, value }: { icon: typeof HelpCircle; label: string; value: number }) {
   return (
     <div className="rounded-xl bg-cream/60 border border-line-soft px-4 py-3">
-      <div className="flex items-center gap-2 text-[11px] text-ink-mute">
-        <Icon size={13} />
-        {label}
-      </div>
+      <div className="flex items-center gap-2 text-[11px] text-ink-mute"><Icon size={13} />{label}</div>
       <div className="mt-1 text-[24px] font-bold num">{value}</div>
     </div>
   );
 }
 
-function ChartPanel({
-  title,
-  icon: Icon,
-  children,
-}: {
-  title: string;
-  icon: typeof HelpCircle;
-  children: React.ReactNode;
-}) {
+function ChartPanel({ title, icon: Icon, children }: { title: string; icon: typeof HelpCircle; children: React.ReactNode }) {
   return (
     <div className="rounded-xl border border-line bg-cream/30 p-4">
-      <h3 className="text-[12px] font-bold flex items-center gap-1.5 mb-3">
-        <Icon size={13} />
-        {title}
-      </h3>
+      <h3 className="text-[12px] font-bold flex items-center gap-1.5 mb-3"><Icon size={13} />{title}</h3>
       <div className="h-60">{children}</div>
     </div>
   );
 }
+
+interface ChartPoint { name: string; count: number }
 
 function BarViz({ data, color }: { data: ChartPoint[]; color: string }) {
   if (data.length === 0) return <EmptyChart />;
@@ -407,24 +429,25 @@ function EmptyChart() {
 }
 
 function Badge({ children }: { children: React.ReactNode }) {
-  return (
-    <span className="w-fit h-6 px-2 rounded-full bg-gold/10 text-gold text-[11px] font-semibold flex items-center">
-      {children}
-    </span>
-  );
+  return <span className="w-fit h-6 px-2 rounded-full bg-gold/10 text-gold text-[11px] font-semibold flex items-center">{children}</span>;
 }
 
-interface ChartPoint {
-  name: string;
-  count: number;
+function InfoBox({ title, items }: { title: string; items: string[] }) {
+  const clean = items.filter(Boolean);
+  return (
+    <div className="rounded-xl border border-line bg-cream/40 p-3">
+      <div className="text-[11px] font-bold text-gold mb-1">{title}</div>
+      {clean.length === 0 ? <div className="text-[12px] text-ink-mute">내용 없음</div> : (
+        <div className="space-y-1">{clean.map((item, index) => <div key={index} className="text-[12px] leading-5 text-ink-soft">{item}</div>)}</div>
+      )}
+    </div>
+  );
 }
 
 function loadLogs(): AssistantLog[] {
   try {
     const parsed = JSON.parse(localStorage.getItem(LOG_KEY) ?? "[]") as AssistantLog[];
-    return Array.isArray(parsed)
-      ? parsed.filter((item) => item && typeof item.id === "string").slice(0, 1000)
-      : [];
+    return Array.isArray(parsed) ? parsed.filter((item) => item && typeof item.id === "string").slice(0, 1000) : [];
   } catch {
     return [];
   }
@@ -436,20 +459,14 @@ function saveLog(log: AssistantLog) {
   return next;
 }
 
-function createLog({
-  question,
-  transcript,
-  result,
-}: {
-  question: string;
-  transcript: string;
-  result: AnswerResult;
-}): AssistantLog {
+function createLog({ question, transcript, customerName, customerPhone, result }: { question: string; transcript: string; customerName: string; customerPhone: string; result: AnswerResult }): AssistantLog {
   const text = `${question} ${transcript}`;
   const answer = result.answer || "";
   return {
     id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     createdAt: new Date().toISOString(),
+    customerName,
+    customerPhone,
     question,
     transcript,
     answer,
@@ -476,7 +493,6 @@ function buildStats(logs: AssistantLog[]) {
   const facilitySeries = groupBy(logs, (log) => log.facility);
   const questionSeries = groupBy(logs, (log) => log.questionType);
   const answerSeries = groupBy(logs, (log) => log.answerType);
-  const periodSeries = groupByDate(logs);
   return {
     total: logs.length,
     facilityCount: facilitySeries.length,
@@ -486,17 +502,17 @@ function buildStats(logs: AssistantLog[]) {
     facilitySeries,
     questionSeries,
     answerSeries,
-    periodSeries,
+    periodSeries: groupByDate(logs),
   };
 }
 
 function groupBy(logs: AssistantLog[], pick: (log: AssistantLog) => string): ChartPoint[] {
   const map = new Map<string, number>();
-  for (const log of logs) map.set(pick(log), (map.get(pick(log)) ?? 0) + 1);
-  return Array.from(map.entries())
-    .map(([name, count]) => ({ name, count }))
-    .sort((a, b) => b.count - a.count)
-    .slice(0, 8);
+  for (const log of logs) {
+    const key = pick(log);
+    map.set(key, (map.get(key) ?? 0) + 1);
+  }
+  return Array.from(map.entries()).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count).slice(0, 8);
 }
 
 function groupByDate(logs: AssistantLog[]): ChartPoint[] {
@@ -505,10 +521,7 @@ function groupByDate(logs: AssistantLog[]): ChartPoint[] {
     const key = formatShortDate(log.createdAt);
     map.set(key, (map.get(key) ?? 0) + 1);
   }
-  return Array.from(map.entries())
-    .map(([name, count]) => ({ name, count }))
-    .sort((a, b) => a.name.localeCompare(b.name))
-    .slice(-14);
+  return Array.from(map.entries()).map(([name, count]) => ({ name, count })).sort((a, b) => a.name.localeCompare(b.name)).slice(-14);
 }
 
 function classify(text: string, rules: { name: string; words: string[] }[], fallback: string) {
@@ -525,4 +538,36 @@ function formatShortDate(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "-";
   return `${date.getMonth() + 1}/${date.getDate()}`;
+}
+
+function summaryText(result: AnswerResult) {
+  return [
+    "[고객 성향]",
+    result.customerProfile ?? "",
+    "",
+    "[답변]",
+    result.answer,
+    "",
+    "[해결방안]",
+    ...(result.resolutionPlan ?? []),
+    "",
+    "[전달 정보]",
+    ...(result.informationToSend ?? []),
+    "",
+    "[문자안]",
+    result.smsDraft ?? "",
+  ].join("\n");
+}
+
+async function copySummary(result: AnswerResult) {
+  await navigator.clipboard?.writeText(summaryText(result));
+}
+
+async function shareSummary(result: AnswerResult) {
+  const text = summaryText(result);
+  if (navigator.share) {
+    await navigator.share({ title: "고객 응대 요약", text });
+    return;
+  }
+  await navigator.clipboard?.writeText(text);
 }
