@@ -62,7 +62,16 @@ export async function GET(req: Request) {
   }
 
   if (!recordingId) {
-    recordingId = await findProcessableRecording(admin);
+    const next = await findProcessableRecording(admin);
+    if (next.setupRequired) {
+      return NextResponse.json({
+        ok: false,
+        processed: false,
+        setupRequired: true,
+        error: "Supabase recordings table is missing. Run the database migrations before STT can process backups.",
+      }, { status: 503 });
+    }
+    recordingId = next.id;
   }
 
   if (!recordingId) {
@@ -102,7 +111,7 @@ function isMissingRelationError(error: unknown) {
 
 async function findProcessableRecording(
   admin: ReturnType<typeof createSupabaseAdminClient>
-) {
+): Promise<{ id: string | null; setupRequired: boolean }> {
   const { data, error } = await admin
     .from("recordings")
     .select("id")
@@ -114,10 +123,22 @@ async function findProcessableRecording(
 
   if (error) {
     console.error("[jobs] direct recording lookup failed:", error);
-    return null;
+    return { id: null, setupRequired: isMissingRecordingsSchema(error) };
   }
 
-  return data?.id ?? null;
+  return { id: data?.id ?? null, setupRequired: false };
+}
+
+function isMissingRecordingsSchema(error: unknown) {
+  const message =
+    typeof error === "object" && error && "message" in error
+      ? String((error as { message?: unknown }).message ?? "")
+      : String(error ?? "");
+  return message.includes("recordings") && (
+    message.includes("schema cache") ||
+    message.includes("Could not find the table") ||
+    message.includes("does not exist")
+  );
 }
 
 async function enqueueMissingProcessingJobs(

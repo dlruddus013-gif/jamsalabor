@@ -18,11 +18,13 @@ export async function processRecordingNow(recordingId: string) {
     throw new Error(error?.message ?? "recording audio not found");
   }
 
-  await admin
+  await ignoreMissingJobTable(
+    admin
     .from("stt_jobs")
     .update({ status: "running", started_at: new Date().toISOString() })
     .eq("recording_id", recordingId)
-    .in("status", ["queued", "failed"]);
+    .in("status", ["queued", "failed"])
+  );
 
   await admin
     .from("recordings")
@@ -42,18 +44,25 @@ export async function processRecordingNow(recordingId: string) {
     ? stt.segments
     : [{ text: stt.text, startSec: 0, endSec: 0, speaker: "0", confidence: null }];
 
-  await admin.from("transcript_segments").delete().eq("recording_id", recordingId);
-  await admin.from("transcript_segments").insert(
-    segments.map((seg) => ({
-      recording_id: recordingId,
-      start_sec: seg.startSec,
-      end_sec: seg.endSec,
-      speaker: seg.speaker === "1" ? "customer" : "agent",
-      text: maskText(seg.text),
-      text_raw: seg.text,
-      confidence: seg.confidence ?? null,
-    }))
+  const { error: deleteSegmentsError } = await admin.from("transcript_segments").delete().eq("recording_id", recordingId);
+  if (deleteSegmentsError) throw new Error(`transcript delete failed: ${deleteSegmentsError.message}`);
+
+  const { error: insertSegmentsError } = await admin.from("transcript_segments").insert(
+    segments.map((seg) => {
+      const startSec = Math.max(0, Math.floor(seg.startSec || 0));
+      const endSec = Math.max(startSec, Math.ceil(seg.endSec || startSec));
+      return {
+        recording_id: recordingId,
+        start_sec: startSec,
+        end_sec: endSec,
+        speaker: seg.speaker === "1" ? "customer" : "agent",
+        text: maskText(seg.text),
+        text_raw: seg.text,
+        confidence: seg.confidence ?? null,
+      };
+    })
   );
+  if (insertSegmentsError) throw new Error(`transcript insert failed: ${insertSegmentsError.message}`);
 
   const summary = await summarizeTranscriptWithLLM(
     segments.map((seg) => ({
@@ -63,13 +72,14 @@ export async function processRecordingNow(recordingId: string) {
     }))
   );
 
-  await admin
+  const { error: staleSummaryError } = await admin
     .from("recording_summaries")
     .update({ is_current: false })
     .eq("recording_id", recordingId)
     .eq("is_current", true);
+  if (staleSummaryError) throw new Error(`summary rollover failed: ${staleSummaryError.message}`);
 
-  await admin.from("recording_summaries").insert({
+  const { error: summaryInsertError } = await admin.from("recording_summaries").insert({
     recording_id: recordingId,
     summary: summary.summary.map(maskText),
     action_items: summary.actionItems.map((item) => ({
@@ -81,10 +91,11 @@ export async function processRecordingNow(recordingId: string) {
     model: summary.provider,
     prompt_version: "mobile-auto-v1",
     is_current: true,
-    created_by: "mobile-auto",
+    created_by: null,
   });
+  if (summaryInsertError) throw new Error(`summary insert failed: ${summaryInsertError.message}`);
 
-  await admin
+  const { error: recordingUpdateError } = await admin
     .from("recordings")
     .update({
       status: "completed",
@@ -94,8 +105,10 @@ export async function processRecordingNow(recordingId: string) {
       category: recording.category === CALL_RECORDING_CATEGORY ? CALL_RECORDING_CATEGORY : summary.keyTopics[0] ?? null,
     })
     .eq("id", recordingId);
+  if (recordingUpdateError) throw new Error(`recording update failed: ${recordingUpdateError.message}`);
 
-  await admin
+  await ignoreMissingJobTable(
+    admin
     .from("stt_jobs")
     .update({
       status: "completed",
@@ -103,7 +116,8 @@ export async function processRecordingNow(recordingId: string) {
       error_code: null,
       error_message: null,
     })
-    .eq("recording_id", recordingId);
+    .eq("recording_id", recordingId)
+  );
 
   return {
     recordingId,
@@ -111,4 +125,18 @@ export async function processRecordingNow(recordingId: string) {
     summaryCount: summary.summary.length,
     provider: summary.provider,
   };
+}
+
+async function ignoreMissingJobTable<T>(request: PromiseLike<{ error: T | null }>) {
+  const { error } = await request;
+  if (!error) return;
+  const message =
+    typeof error === "object" && error && "message" in error
+      ? String((error as { message?: unknown }).message)
+      : String(error);
+  if (message.includes("stt_jobs") && (message.includes("schema cache") || message.includes("Could not find the table"))) {
+    console.error("[processor] stt_jobs table missing; continuing without job status update:", error);
+    return;
+  }
+  throw new Error(message);
 }
