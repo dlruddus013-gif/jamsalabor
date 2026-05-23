@@ -20,6 +20,7 @@ export async function GET(req: Request) {
   }
 
   const admin = createSupabaseAdminClient();
+  let recordingId: string | null = null;
   let { data: job, error } = await admin
     .from("stt_jobs")
     .select("recording_id")
@@ -30,9 +31,14 @@ export async function GET(req: Request) {
     .maybeSingle();
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    if (!isMissingRelationError(error)) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+    console.error("[jobs] stt_jobs table missing; processing recordings directly:", error);
   }
-  if (!job?.recording_id) {
+  recordingId = job?.recording_id ?? null;
+
+  if (!recordingId && !error) {
     const enqueued = await enqueueMissingProcessingJobs(admin);
     if (enqueued > 0) {
       const retry = await admin
@@ -44,17 +50,27 @@ export async function GET(req: Request) {
         .limit(1)
         .maybeSingle();
       if (retry.error) {
-        return NextResponse.json({ error: retry.error.message }, { status: 500 });
+        if (!isMissingRelationError(retry.error)) {
+          return NextResponse.json({ error: retry.error.message }, { status: 500 });
+        }
+        console.error("[jobs] stt_jobs retry lookup missing; falling back:", retry.error);
+      } else {
+        job = retry.data;
+        recordingId = job?.recording_id ?? null;
       }
-      job = retry.data;
     }
   }
-  if (!job?.recording_id) {
+
+  if (!recordingId) {
+    recordingId = await findProcessableRecording(admin);
+  }
+
+  if (!recordingId) {
     return NextResponse.json({ ok: true, processed: false });
   }
 
   try {
-    const result = await processRecordingNow(job.recording_id);
+    const result = await processRecordingNow(recordingId);
     return NextResponse.json({ ok: true, processed: true, result });
   } catch (error) {
     const message = error instanceof Error ? error.message : "processing failed";
@@ -66,9 +82,42 @@ export async function GET(req: Request) {
         error_message: message,
         completed_at: new Date().toISOString(),
       })
-      .eq("recording_id", job.recording_id);
+      .eq("recording_id", recordingId);
     return NextResponse.json({ ok: false, error: message }, { status: 500 });
   }
+}
+
+function isMissingRelationError(error: unknown) {
+  const message =
+    typeof error === "object" && error && "message" in error
+      ? String((error as { message?: unknown }).message ?? "")
+      : String(error ?? "");
+  return (
+    message.includes("stt_jobs") &&
+    (message.includes("schema cache") ||
+      message.includes("Could not find the table") ||
+      message.includes("does not exist"))
+  );
+}
+
+async function findProcessableRecording(
+  admin: ReturnType<typeof createSupabaseAdminClient>
+) {
+  const { data, error } = await admin
+    .from("recordings")
+    .select("id")
+    .in("status", ["uploading", "processing", "failed"])
+    .not("audio_path", "is", null)
+    .order("recorded_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    console.error("[jobs] direct recording lookup failed:", error);
+    return null;
+  }
+
+  return data?.id ?? null;
 }
 
 async function enqueueMissingProcessingJobs(
