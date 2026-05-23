@@ -34,6 +34,15 @@ export async function POST(req: Request) {
   }
 
   const admin = createSupabaseAdminClient();
+  if (!(await hasRecordingsSchema(admin))) {
+    return NextResponse.json({
+      ok: false,
+      error: "Supabase recordings table is missing. Run supabase/combined_migrations_for_sql_editor.sql in Supabase SQL Editor.",
+      code: "setup_required",
+      setupRequired: true,
+    }, { status: 503 });
+  }
+
   const deviceId = String(formData.get("deviceId") || "android").replace(/[^\w.-]/g, "_");
   const sha256 = String(formData.get("sha256") || "").trim() || null;
   const originalPath = String(formData.get("originalPath") || "");
@@ -154,4 +163,11 @@ function normalizePhone(value: string) {
   if (digits.length === 10 && digits.startsWith("02")) return `${digits.slice(0, 2)}-${digits.slice(2, 6)}-${digits.slice(6)}`;
   if (digits.length === 10) return `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}`;
   return digits;
+}
+
+async function hasRecordingsSchema(supabase: ReturnType<typeof createSupabaseAdminClient>) {
+  const { error } = await supabase.from("recordings").select("id").limit(1);
+  if (!error) return true;
+  const message = error.message ?? "";
+  return !(message.includes("Could not find the table") || (message.includes("recordings") && message.includes("schema cache")));
 }

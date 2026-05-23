@@ -233,6 +233,10 @@ export async function uploadRecording(
     const supabase = admin;
     const ownerId = String(formData.get("ownerId") || process.env.MOBILE_BACKUP_OWNER_ID || "").trim() || null;
 
+    if (!(await hasRecordingsSchema(supabase))) {
+      return { ok: true, id: `local_backup:${Date.now()}`, mock: true };
+    }
+
     if (ownerId) {
       const { data: canStore, error: quotaError } = await supabase.rpc("can_store_recording", {
         p_owner_id: ownerId,
@@ -371,4 +375,20 @@ async function findDuplicateRecording(
     return null;
   }
   return data as { id: string } | null;
+}
+
+async function hasRecordingsSchema(
+  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>
+) {
+  const { error } = await supabase.from("recordings").select("id").limit(1);
+  if (!error) return true;
+  return !isMissingRecordingsSchema(error);
+}
+
+function isMissingRecordingsSchema(error: unknown) {
+  const message =
+    typeof error === "object" && error && "message" in error
+      ? String((error as { message?: unknown }).message)
+      : String(error);
+  return message.includes("Could not find the table") || (message.includes("recordings") && message.includes("schema cache"));
 }

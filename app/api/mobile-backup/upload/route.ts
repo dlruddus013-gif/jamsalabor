@@ -38,6 +38,15 @@ export async function POST(req: Request) {
   }
 
   const admin = createSupabaseAdminClient();
+  if (!(await hasRecordingsSchema(admin))) {
+    return NextResponse.json({
+      ok: false,
+      error: "Supabase recordings table is missing. Run supabase/combined_migrations_for_sql_editor.sql in Supabase SQL Editor.",
+      code: "setup_required",
+      setupRequired: true,
+    }, { status: 503 });
+  }
+
   const source = "phone_backup";
   const originalPath = stringValue(formData.get("relativePath")) || stringValue(formData.get("originalPath"));
   const sha256 = stringValue(formData.get("sha256")) || null;
@@ -147,4 +156,11 @@ export async function POST(req: Request) {
 
 function stringValue(value: FormDataEntryValue | null) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+async function hasRecordingsSchema(supabase: ReturnType<typeof createSupabaseAdminClient>) {
+  const { error } = await supabase.from("recordings").select("id").limit(1);
+  if (!error) return true;
+  const message = error.message ?? "";
+  return !(message.includes("Could not find the table") || (message.includes("recordings") && message.includes("schema cache")));
 }

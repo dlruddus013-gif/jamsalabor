@@ -19,7 +19,7 @@ export { fetchFilterOptions };
 export async function searchRecordings(params: SearchParams): Promise<SearchResult> {
   const primary = await searchRecordingsPrimary(params);
 
-  if (!isUsingSupabaseServer() || primary.total > 0) {
+  if (!isUsingSupabaseServer() || primary.total > 0 || primary.source === "mock") {
     return primary;
   }
 
@@ -63,6 +63,9 @@ async function searchRecordingsTable(p: SearchParams): Promise<SearchResult> {
 
   if (error) {
     console.error("[search] resilient table fallback failed:", error);
+    if (isMissingRecordingsSchema(error)) {
+      return { hits: [], total: 0, source: "mock" };
+    }
     return { hits: [], total: 0, source: "supabase" };
   }
 
@@ -135,6 +138,14 @@ async function recoverStorageBackups() {
   if (error) {
     console.error("[search] storage recovery insert failed:", error);
   }
+}
+
+function isMissingRecordingsSchema(error: unknown) {
+  const message =
+    typeof error === "object" && error && "message" in error
+      ? String((error as { message?: unknown }).message)
+      : String(error);
+  return message.includes("Could not find the table") || message.includes("recordings") && message.includes("schema cache");
 }
 
 async function listBackupStorageFiles(supabase: ReturnType<typeof createSupabaseAdminClient>) {
