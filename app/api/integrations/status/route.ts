@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { searchNaver } from "@/lib/integrations/naver";
 import { checkOkposConnection } from "@/lib/integrations/okpos";
 import { hasGoogleSearchConfig, searchGoogle } from "@/lib/integrations/google";
+import { hasSmsSendConfig } from "@/lib/integrations/sms";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -37,12 +38,7 @@ function hasAnthropicConfig() {
 }
 
 function hasSmsConfig() {
-  return Boolean(
-    process.env.SMS_API_KEY ||
-      process.env.ALIGO_API_KEY ||
-      process.env.COOLSMS_API_KEY ||
-      process.env.NAVER_SENS_SERVICE_ID
-  );
+  return hasSmsSendConfig();
 }
 
 async function checkNaverSearch(): Promise<ServiceStatus> {

@@ -119,6 +119,8 @@ export default function AssistantConsole() {
   const [logs, setLogs] = useState<AssistantLog[]>([]);
   const [period, setPeriod] = useState<PeriodKey>("30d");
   const [facilityFilter, setFacilityFilter] = useState("all");
+  const [smsStatus, setSmsStatus] = useState("");
+  const [smsPending, setSmsPending] = useState(false);
   const [isPending, startTransition] = useTransition();
 
   useEffect(() => {
@@ -138,6 +140,7 @@ export default function AssistantConsole() {
   const ask = () => {
     startTransition(async () => {
       setResult(null);
+      setSmsStatus("");
       const res = await fetch("/api/assistant/answer", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -152,6 +155,28 @@ export default function AssistantConsole() {
         setLogs(saved);
       }
     });
+  };
+
+  const sendResultSms = async (answer: AnswerResult) => {
+    if (!customerPhone.trim()) return;
+    setSmsPending(true);
+    setSmsStatus("");
+    try {
+      const res = await fetch("/api/assistant/sms", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          to: customerPhone,
+          message: answer.smsDraft || answer.answer,
+        }),
+      });
+      const data = (await res.json()) as { ok?: boolean; message?: string; error?: string };
+      setSmsStatus(data.message || data.error || (data.ok ? "문자를 발송했습니다." : "문자 발송 설정이 필요합니다."));
+    } catch (error) {
+      setSmsStatus(error instanceof Error ? error.message : "문자 발송에 실패했습니다.");
+    } finally {
+      setSmsPending(false);
+    }
   };
 
   const clearLogs = () => {
@@ -277,11 +302,22 @@ export default function AssistantConsole() {
                   공유
                 </button>
                 {customerPhone && (
-                  <a href={`sms:${customerPhone.replace(/\D/g, "")}?body=${encodeURIComponent(result.smsDraft ?? result.answer)}`} className="px-3 py-2 rounded-lg border border-line bg-cream text-[12px] font-semibold">
-                    문자 보내기
-                  </a>
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => sendResultSms(result)}
+                      disabled={smsPending}
+                      className="px-3 py-2 rounded-lg border border-line bg-cream text-[12px] font-semibold disabled:opacity-50"
+                    >
+                      {smsPending ? "문자 발송 중" : "문자 API 발송"}
+                    </button>
+                    <a href={`sms:${customerPhone.replace(/\D/g, "")}?body=${encodeURIComponent(result.smsDraft ?? result.answer)}`} className="px-3 py-2 rounded-lg border border-line bg-cream text-[12px] font-semibold">
+                      문자앱 열기
+                    </a>
+                  </>
                 )}
               </div>
+              {smsStatus && <div className="text-[12px] text-ink-mute">{smsStatus}</div>}
 
               {result.suggestedFollowUps?.length > 0 && (
                 <InfoBox title="후속 확인" items={result.suggestedFollowUps} />
