@@ -53,12 +53,16 @@ interface Props {
   hits: SearchHit[];
   query: string;
   hasFilters: boolean;
+  allowLocalBackups?: boolean;
 }
 
-export default function SearchResults({ hits, query, hasFilters }: Props) {
+export default function SearchResults({ hits, query, hasFilters, allowLocalBackups = false }: Props) {
   const router = useRouter();
   const [localHits, setLocalHits] = useState<SearchHit[]>([]);
-  const displayHits = useMemo(() => mergeLocalHits(hits, localHits, query), [hits, localHits, query]);
+  const displayHits = useMemo(
+    () => (allowLocalBackups ? mergeLocalHits(hits, localHits, query) : hits),
+    [allowLocalBackups, hits, localHits, query]
+  );
   const hasLiveJobs = displayHits.some((hit) => hit.status === "uploading" || hit.status === "processing");
 
   useEffect(() => {
@@ -70,6 +74,10 @@ export default function SearchResults({ hits, query, hasFilters }: Props) {
   }, [hasLiveJobs, router]);
 
   useEffect(() => {
+    if (!allowLocalBackups) {
+      setLocalHits([]);
+      return;
+    }
     const load = () => setLocalHits(loadLocalBackupRecordings());
     load();
     const timer = window.setInterval(load, 3000);
@@ -78,7 +86,7 @@ export default function SearchResults({ hits, query, hasFilters }: Props) {
       window.clearInterval(timer);
       window.removeEventListener("storage", load);
     };
-  }, []);
+  }, [allowLocalBackups]);
 
   if (displayHits.length === 0) {
     return (

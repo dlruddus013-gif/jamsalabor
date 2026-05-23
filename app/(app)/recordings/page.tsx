@@ -90,7 +90,12 @@ export default async function RecordingsPage({ searchParams }: PageProps) {
         initialDateTo={dateTo}
       />
 
-      <SearchResults hits={hits} query={query} hasFilters={hasFilters} />
+      <SearchResults
+        hits={hits}
+        query={query}
+        hasFilters={hasFilters}
+        allowLocalBackups={source === "mock"}
+      />
     </div>
   );
 }
